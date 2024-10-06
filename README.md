@@ -50,6 +50,59 @@ python geotag.py --json /path/to/location_data.json --dir /path/to/images/ --tim
 This script currently supports the following image file formats:
 
 - JPEG (.jpg, .jpeg)
+
+## Supported Google Timeline JSON Format
+
+The script supports the following formats of Google Timeline location data:
+
+1. Activity Data:
+```json
+{
+  "endTime": "2024-01-01T12:00:00.000+02:00",
+  "startTime": "2024-01-01T11:00:00.00+02:00",
+  "activity": {
+    "probability": "0.99",
+    "end": "geo:XX.000000,XX.000000",
+    "topCandidate": {
+      "type": "in passenger vehicle",
+      "probability": "0.94"
+    },
+    "distanceMeters": "20912.751953",
+    "start": "geo:XX.100000,XX.000000"
+  }
+}
+```
+2. Visit Data:
+```json
+{
+  "endTime": "2024-01-01T11:00:00.000+02:00",
+  "startTime": "2024-01-01T18:00:00.000+02:00",
+  "visit": {
+    "hierarchyLevel": "0",
+    "topCandidate": {
+      "probability": "0.30",
+      "semanticType": "Unknown",
+      "placeID": "ChIJXXXXXXX",
+      "placeLocation": "geo:XX.000000,XX.000000"
+    },
+    "probability": "0.90"
+  }
+}
+```
+3. Timeline Path Data:
+```json
+{
+  "endTime": "2024-01-01T13:00:00.000Z",
+  "startTime": "2024-01-01T11:00:00.000Z",
+  "timelinePath": [
+    {
+      "point": "geo:XX.000000,XX.000000",
+      "durationMinutesOffsetFromStartTime": "10"
+    }
+  ]
+}
+```
+
 ## Important Notes
 
 - **Backup:** It is recommended to keep a backup of your images before running the script, especially if you are unsure about the changes.
