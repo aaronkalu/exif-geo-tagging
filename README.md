@@ -1,4 +1,4 @@
-# Geotagging Script for Images
+# Geotag Images with Google Timeline Data
 
 This Python script uses Google Timeline location data to geotag images by matching their timestamps with the closest location from your Google location history. It adjusts the EXIF GPS coordinates of the images accordingly.
 
