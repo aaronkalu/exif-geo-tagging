@@ -5,7 +5,7 @@ This Python script uses Google Timeline location data to geotag images by matchi
 ## Requirements
 
 - **Python:** Ensure Python 3.x is installed on your system.
-- **ExifTool:** This script requires exiftool to be installed. You can download it from ExifTool's official website or install it using a package manager.
+- **ExifTool:** This script requires `exiftool` to be installed. You can download it from [ExifTool's official website](https://exiftool.org/) or install it using a package manager.
 ## Installation Instructions
 
 1. **Install Python**:
