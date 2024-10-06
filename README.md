@@ -53,5 +53,4 @@ This script currently supports the following image file formats:
 ## Important Notes
 
 - **Backup:** It is recommended to keep a backup of your images before running the script, especially if you are unsure about the changes.
-- **GPS Data:** The script will skip images that already contain GPS data to avoid overwriting existing location information.
 - **EXIF Quality:** Modifying the EXIF data does not affect the image quality, as it only updates the metadata.
