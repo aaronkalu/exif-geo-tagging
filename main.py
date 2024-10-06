@@ -10,13 +10,14 @@ import pytz
 
 
 class Location:
-    def __init__(self, timestamp=None, latitude=None, longitude=None):
+    def __init__(self, timestamp=None, latitude=None, longitude=None, maps_type=None):
         self.timestampUtc = timestamp  # Assume this is already in UTC
         self.latitude = latitude
         self.longitude = longitude
+        self.maps_type = maps_type
 
     def __repr__(self):
-        return f"Location({self.timestampUtc}, {self.latitude}, {self.longitude})"
+        return f"Location({self.timestampUtc}, {self.latitude}, {self.longitude}, {self.maps_type})"
 
     def __eq__(self, other):
         return self.timestampUtc == other.timestampUtc
@@ -31,32 +32,78 @@ def parse_geo_point(geo_point):
     return float(lat), float(lng)
 
 
-def filter_timeline_entries(data):
-    """Filters out entries that don't have a 'timelinePath' key. (e.g. entries that save activity data)"""
-    return [entry for entry in data if 'timelinePath' in entry]
+def format_offset(offset_str):
+    """Converts offset from +0200 to +02:00."""
+    return f"{offset_str[:-2]}:{offset_str[-2:]}"
 
 
 def generate_locations_from_timeline(data):
     locations = []
-    filtered_data = filter_timeline_entries(data)
 
-    for entry in filtered_data:
+    for entry in data:
         start_time = entry['startTime']
-        timeline_path = entry.get('timelinePath', [])
+        start_time_dt = datetime.datetime.strptime(start_time,'%Y-%m-%dT%H:%M:%S.%f%z')  # Parse the start time with timezone
 
-        start_time_dt = datetime.datetime.strptime(start_time, '%Y-%m-%dT%H:%M:%S.%fZ')
+        if 'timelinePath' in entry:  # 'timelinePath' is already in UTC
+            timeline_path = entry.get('timelinePath', [])
 
-        for point_data in timeline_path:
-            point_geo = point_data['point']
-            duration_offset = int(point_data['durationMinutesOffsetFromStartTime'])
+            for point_data in timeline_path:
+                point_geo = point_data['point']
+                duration_offset = int(point_data['durationMinutesOffsetFromStartTime'])
 
-            # Assume Google Timeline times are in UTC
-            timestamp_utc = start_time_dt + datetime.timedelta(minutes=duration_offset)
+                # Calculate timestamp in UTC (already UTC, no need for conversion)
+                timestamp_utc = start_time_dt + datetime.timedelta(minutes=duration_offset)
+                timestamp_utc = timestamp_utc.replace(tzinfo=None)
+                latitude, longitude = parse_geo_point(point_geo)
 
-            latitude, longitude = parse_geo_point(point_geo)
-            location = Location(timestamp=timestamp_utc, latitude=latitude, longitude=longitude)
-            locations.append(location)
+                location = Location(timestamp=timestamp_utc, latitude=latitude, longitude=longitude, maps_type='timeline')
+                locations.append(location)
 
+        elif 'activity' in entry:  # Needs UTC conversion
+            activity = entry['activity']
+
+            # Convert start time to UTC using the offset in the timestamp
+            offset_str = format_offset(start_time_dt.strftime('%z'))  # Correct the offset format
+            start_time_utc = convert_to_utc(start_time_dt, offset_str)
+
+            if 'start' in activity and 'end' in activity:
+                start_geo = activity['start']
+                end_geo = activity['end']
+
+                # Parse and adjust both start and end times
+                start_lat, start_lng = parse_geo_point(start_geo)
+                end_lat, end_lng = parse_geo_point(end_geo)
+
+                start_location = Location(timestamp=start_time_utc, latitude=start_lat, longitude=start_lng, maps_type='activity_start')
+                locations.append(start_location)
+
+                end_time = entry['endTime']
+                end_time_dt = datetime.datetime.strptime(end_time, '%Y-%m-%dT%H:%M:%S.%f%z')
+                offset_str = format_offset(end_time_dt.strftime('%z'))  # Correct the offset format for end time
+                end_time_utc = convert_to_utc(end_time_dt, offset_str)
+
+                end_location = Location(timestamp=end_time_utc, latitude=end_lat, longitude=end_lng, maps_type='activity_end')
+                locations.append(end_location)
+
+        elif 'visit' in entry:  # Needs UTC conversion
+            visit = entry['visit']
+            top_candidate = visit['topCandidate']
+            visit_geo = top_candidate['placeLocation']
+            location_lat, location_lng = parse_geo_point(visit_geo)
+
+            offset_str = format_offset(start_time_dt.strftime('%z'))  # Correct the offset format
+            start_time_utc = convert_to_utc(start_time_dt, offset_str)  # Convert visit start time to UTC
+            start_location = Location(timestamp=start_time_utc, latitude=location_lat, longitude=location_lng, maps_type='visit_start')
+            locations.append(start_location)
+
+            end_time = entry['endTime']
+            end_time_dt = datetime.datetime.strptime(end_time, '%Y-%m-%dT%H:%M:%S.%f%z')
+            offset_str = format_offset(end_time_dt.strftime('%z'))  # Correct the offset format for end time
+            end_time_utc = convert_to_utc(end_time_dt, offset_str)
+            end_location = Location(timestamp=end_time_utc, latitude=location_lat, longitude=location_lng, maps_type='visit_end')
+            locations.append(end_location)
+
+    locations.sort(key=lambda l: l.timestampUtc)
     return locations
 
 
@@ -121,7 +168,8 @@ def convert_to_utc(local_time, offset_str):
         # If no offset is provided, assume local_time is already in UTC
         utc_time = local_time
 
-    return utc_time
+    # Remove timezone information and microseconds
+    return utc_time.replace(tzinfo=None, microsecond=0)
 
 
 
@@ -153,7 +201,8 @@ for image_file in file_names:
     image_file_path = os.path.join(image_dir, image_file)
 
     # Use exiftool to get the EXIF data
-    cmd = ["exiftool", "-DateTimeOriginal", "-SubSecTimeOriginal", "-OffsetTimeOriginal", "-T", image_file_path]
+    cmd = ["exiftool", "-DateTimeOriginal", "-SubSecTimeOriginal", "-OffsetTimeOriginal", "-T", "-GPSLatitude",
+           "-GPSLongitude", image_file_path]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     if result.returncode != 0:
@@ -191,7 +240,7 @@ for image_file in file_names:
           f"Hours away: {hours_away}")
 
     if hours_away < hours_threshold:
-        if 2 in exif_data or 3 in exif_data:  # 2 = GPSLatitude, 3 = GPSLongitude
+        if exif_data[4] != "-" and exif_data[5] != "-":
             print(f"Skipping {image_file}: GPS data already exists.")
             continue
 
