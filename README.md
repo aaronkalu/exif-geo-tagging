@@ -28,7 +28,7 @@ This Python script uses Google Timeline location data to geotag images by matchi
 To use the script, navigate to the directory containing geotag.py and run the following command in your terminal:
 
 ```bash
-python geotag.py --json /path/to/location_data.json --dir /path/to/images/ [--time hours]
+python geotag.py --json /path/to/location_data.json --dir /path/to/images/ [--time hours] [--overwrite]
 ```
 
 **Parameters:**
