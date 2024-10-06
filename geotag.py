@@ -196,7 +196,8 @@ check_exiftool_installed()
 parser = argparse.ArgumentParser()
 parser.add_argument('-j', '--json', help='The JSON file containing your location history.', required=True)
 parser.add_argument('-d', '--dir', help='Images folder.', required=True)
-parser.add_argument('-t', '--time', help='Hours of tolerance for matching image to location.', default=1, required=False)
+parser.add_argument('-t', '--tolerance', help='Hours of tolerance for matching image to location.', default=1, required=False)
+parser.add_argument('-o', '--overwrite', action='store_true', help='Overwrite existing GPS data.')
 args = vars(parser.parse_args())
 
 locations_file = args['json']
@@ -229,7 +230,7 @@ for image_file in file_names:
         print(f"Image {image_file} - Unexpected ExifTool output or missing fields: {exif_data}")
         continue
 
-    if exif_data[4] == "-" or exif_data[5] == "-":
+    if exif_data[4] == "-" and not args['overwrite']:
         print(f"Image {image_file}: Skipping, GPS data already present.")
         continue
 
