@@ -2,11 +2,9 @@ import os
 import argparse
 import datetime
 from bisect import bisect_left
-from PIL import Image
 import json
 import subprocess
 from fractions import Fraction
-import pytz
 
 
 class Location:
@@ -190,10 +188,6 @@ with open(locations_file) as f:
 
 my_locations = generate_locations_from_timeline(location_data)
 
-print(f'Found {len(my_locations)} valid locations')
-for loc in my_locations:
-    print(loc)
-
 included_extensions = ['jpg', 'JPG', 'jpeg', 'JPEG']
 file_names = [fn for fn in os.listdir(image_dir) if any(fn.endswith(ext) for ext in included_extensions)]
 
@@ -206,13 +200,13 @@ for image_file in file_names:
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     if result.returncode != 0:
-        print(f"Error reading EXIF data for {image_file}: {result.stderr}")
+        print(f"Image {image_file} - ExifTool error: {result.stderr}")
         continue
 
     exif_data = result.stdout.strip().split()
 
     if len(exif_data) < 3:
-        print(f"Unexpected EXIF data format for {image_file}: {result.stdout}")
+        print(f"Image {image_file} - Unexpected ExifTool output: {exif_data}")
         continue
 
     date_original = exif_data[0]  # "YYYY:MM:DD"
@@ -241,7 +235,7 @@ for image_file in file_names:
 
     if hours_away < hours_threshold:
         if exif_data[4] != "-" and exif_data[5] != "-":
-            print(f"Skipping {image_file}: GPS data already exists.")
+            print(f"Image {image_file}: Skipping, GPS data already exists.")
             continue
 
         lat_deg = to_deg(approx_location.latitude, ["S", "N"])
@@ -259,8 +253,8 @@ for image_file in file_names:
 
         try:
             subprocess.run(command, check=True)
-            print(f"Updated GPS data for {image_file}.")
+            print(f"Image {image_file}: GPS data updated.")
         except subprocess.CalledProcessError as e:
-            print(f"Failed to update GPS data for {image_file}: {e}")
+            print(f"Image {image_file}: Error updating GPS data: {e}")
     else:
-        print(f"Skipping {image_file}: No location data within {hours_threshold} hours.")
+        print(f"Image  {image_file}: Skipping, no location data within {hours_threshold} hours.")
