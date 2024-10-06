@@ -67,7 +67,7 @@ The script supports the following formats of Google Timeline location data:
       "type": "in passenger vehicle",
       "probability": "0.94"
     },
-    "distanceMeters": "20912.751953",
+    "distanceMeters": "200.00",
     "start": "geo:XX.100000,XX.000000"
   }
 }
@@ -82,7 +82,7 @@ The script supports the following formats of Google Timeline location data:
     "topCandidate": {
       "probability": "0.30",
       "semanticType": "Unknown",
-      "placeID": "ChIJXXXXXXX",
+      "placeID": "XXXXXXX",
       "placeLocation": "geo:XX.000000,XX.000000"
     },
     "probability": "0.90"
