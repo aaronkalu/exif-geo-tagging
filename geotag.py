@@ -230,7 +230,7 @@ for image_file in file_names:
         print(f"Image {image_file} - Unexpected ExifTool output or missing fields: {exif_data}")
         continue
 
-    if exif_data[4] == "-" and not args['overwrite']:
+    if exif_data[4] != "-" and not args['overwrite']:
         print(f"Image {image_file}: Skipping, GPS data already present.")
         continue
 
