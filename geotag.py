@@ -202,7 +202,7 @@ args = vars(parser.parse_args())
 
 locations_file = args['json']
 image_dir = args['dir']
-hours_threshold = int(args['time'])
+hours_threshold = int(args['tolerance'])
 
 print('Loading data (takes a while)...')
 with open(locations_file) as f:
