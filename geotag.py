@@ -198,6 +198,7 @@ parser.add_argument('-j', '--json', help='The JSON file containing your location
 parser.add_argument('-d', '--dir', help='Images folder.', required=True)
 parser.add_argument('-t', '--tolerance', help='Hours of tolerance for matching image to location.', default=1, required=False)
 parser.add_argument('-o', '--overwrite', action='store_true', help='Overwrite existing GPS data.')
+parser.add_argument('--recursive', action='store_true', help='Process images in subdirectories recursively.')
 args = vars(parser.parse_args())
 
 locations_file = args['json']
@@ -211,27 +212,34 @@ with open(locations_file) as f:
 my_locations = generate_locations_from_timeline(location_data)
 
 included_extensions = ['jpg', 'jpeg', 'JPG', 'JPEG']
-file_names = [fn for fn in os.listdir(image_dir) if any(fn.endswith(ext) for ext in included_extensions)]
 
-for image_file in file_names:
-    image_file_path = os.path.join(image_dir, image_file)
+def get_image_files(directory, recursive):
+    if recursive:
+        image_files = []
+        for root, _, files in os.walk(directory):
+            image_files.extend(os.path.join(root, fn) for fn in files if any(fn.endswith(ext) for ext in included_extensions))
+        return image_files
+    else:
+        return [os.path.join(directory, fn) for fn in os.listdir(directory) if any(fn.endswith(ext) for ext in included_extensions)]
 
-    cmd = ["exiftool", "-DateTimeOriginal", "-SubSecTimeOriginal", "-OffsetTimeOriginal", "-T", "-GPSLatitude",
-           "-GPSLongitude", image_file_path]
+file_names = get_image_files(image_dir, args['recursive'])
+
+for image_file_path in file_names:
+    cmd = ["exiftool", "-DateTimeOriginal", "-SubSecTimeOriginal", "-OffsetTimeOriginal", "-T", "-GPSLatitude", "-GPSLongitude", image_file_path]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     if result.returncode != 0:
-        print(f"Image {image_file} - ExifTool error: {result.stderr}")
+        print(f"Image {image_file_path} - ExifTool error: {result.stderr}")
         continue
 
     exif_data = result.stdout.strip().split()
 
     if len(exif_data) < 6:
-        print(f"Image {image_file} - Unexpected ExifTool output or missing fields: {exif_data}")
+        print(f"Image {image_file_path} - Unexpected ExifTool output or missing fields: {exif_data}")
         continue
 
     if exif_data[4] != "-" and not args['overwrite']:
-        print(f"Image {image_file}: Skipping, GPS data already present.")
+        print(f"Image {image_file_path}: Skipping, GPS data already present.")
         continue
 
     date_original = exif_data[0]  # "YYYY:MM:DD"
@@ -245,7 +253,7 @@ for image_file in file_names:
     image_location = Location(timestamp=timestamp_utc)
 
     approx_location = find_closest_in_time(my_locations, image_location)
-    print(f"Image {image_file}: Closest location: {approx_location}")
+    print(f"Image {image_file_path}: Closest location: {approx_location}")
 
     update_image_gps(image_file_path, approx_location)
 
