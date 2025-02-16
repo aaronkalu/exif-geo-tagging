@@ -37,6 +37,7 @@ python geotag.py --json /path/to/location_data.json --dir /path/to/images/ [--to
 - `--dir` or `-d`: The path to the directory containing the images you want to geotag.
 - `--tolerance` or `-t`: The number of hours of tolerance to match the image timestamp with a location (default is 1 hour).
 - `--overwrite` or `-o`: Specify this flag to overwrite existing GPS data in the images.
+- `--recursive`: Specify this flag to process images in subdirectories recursively.
 
 **Example:**
 
