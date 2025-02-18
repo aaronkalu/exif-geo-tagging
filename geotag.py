@@ -5,6 +5,8 @@ from bisect import bisect_left
 import json
 import subprocess
 from fractions import Fraction
+from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
 
 
 class Location:
@@ -196,9 +198,10 @@ check_exiftool_installed()
 parser = argparse.ArgumentParser()
 parser.add_argument('-j', '--json', help='The JSON file containing your location history.', required=True)
 parser.add_argument('-d', '--dir', help='Images folder.', required=True)
-parser.add_argument('-t', '--tolerance', help='Hours of tolerance for matching image to location.', default=1, required=False)
+parser.add_argument('-t', '--tolerance', help='Hours of tolerance for matching image to location.', default=1)
 parser.add_argument('-o', '--overwrite', action='store_true', help='Overwrite existing GPS data.')
 parser.add_argument('--recursive', action='store_true', help='Process images in subdirectories recursively.')
+parser.add_argument('--workers', type=int, default=1, help='Number of threads to run in parallel.')
 args = vars(parser.parse_args())
 
 locations_file = args['json']
@@ -224,23 +227,24 @@ def get_image_files(directory, recursive):
 
 file_names = get_image_files(image_dir, args['recursive'])
 
-for image_file_path in file_names:
+# Parallel processing using ThreadPoolExecutor
+def process_image(image_file_path):
     cmd = ["exiftool", "-DateTimeOriginal", "-SubSecTimeOriginal", "-OffsetTimeOriginal", "-T", "-GPSLatitude", "-GPSLongitude", image_file_path]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     if result.returncode != 0:
         print(f"Image {image_file_path} - ExifTool error: {result.stderr}")
-        continue
+        return
 
     exif_data = result.stdout.strip().split()
 
     if len(exif_data) < 6:
         print(f"Image {image_file_path} - Unexpected ExifTool output or missing fields: {exif_data}")
-        continue
+        return
 
     if exif_data[4] != "-" and not args['overwrite']:
         print(f"Image {image_file_path}: Skipping, GPS data already present.")
-        continue
+        return
 
     date_original = exif_data[0]  # "YYYY:MM:DD"
     time_original = exif_data[1]  # "HH:MM:SS"
@@ -256,5 +260,11 @@ for image_file_path in file_names:
     print(f"Image {image_file_path}: Closest location: {approx_location}")
 
     update_image_gps(image_file_path, approx_location)
+
+# Use tqdm for progress bar and parallel processing
+max_workers = args['workers'] if args['workers'] > 0 else 1
+
+with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    list(tqdm(executor.map(process_image, file_names), total=len(file_names)))
 
 print('Done.')
