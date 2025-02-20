@@ -196,17 +196,18 @@ def update_image_gps(image_file, approx_location):
 check_exiftool_installed()
 
 parser = argparse.ArgumentParser()
-parser.add_argument('-j', '--json', help='The JSON file containing your location history.', required=True)
-parser.add_argument('-d', '--dir', help='Images folder.', required=True)
-parser.add_argument('-t', '--tolerance', help='Hours of tolerance for matching image to location.', default=1)
-parser.add_argument('-o', '--overwrite', action='store_true', help='Overwrite existing GPS data.')
-parser.add_argument('--recursive', action='store_true', help='Process images in subdirectories recursively.')
-parser.add_argument('--workers', type=int, default=1, help='Number of threads to run in parallel.')
-args = vars(parser.parse_args())
 
-locations_file = args['json']
-image_dir = args['dir']
-hours_threshold = int(args['tolerance'])
+parser.add_argument('-j', '--json', required=True, help="Path to Google Timeline JSON file.")
+parser.add_argument('-d', '--dir', required=True, help="Directory containing images.")
+parser.add_argument('-t', '--tolerance', type=int, default=1, help="Tolerance in hours for matching images to locations.")
+parser.add_argument('-o', '--overwrite', action='store_true', help="Overwrite existing GPS data.")
+parser.add_argument('-r', '--recursive', action='store_true', help="Process images in subdirectories recursively.")
+parser.add_argument('-w', '--workers', type=int, default=1, help="Number of parallel threads to use.")
+args = parser.parse_args()
+
+locations_file = args.json
+image_dir = args.dir
+hours_threshold = args.tolerance
 
 print('Loading data (takes a while)...')
 with open(locations_file) as f:
@@ -225,7 +226,7 @@ def get_image_files(directory, recursive):
     else:
         return [os.path.join(directory, fn) for fn in os.listdir(directory) if any(fn.endswith(ext) for ext in included_extensions)]
 
-file_names = get_image_files(image_dir, args['recursive'])
+file_names = get_image_files(image_dir, args.recursive)
 
 # Parallel processing using ThreadPoolExecutor
 def process_image(image_file_path):
@@ -242,7 +243,7 @@ def process_image(image_file_path):
         print(f"Image {image_file_path} - Unexpected ExifTool output or missing fields: {exif_data}")
         return
 
-    if exif_data[4] != "-" and not args['overwrite']:
+    if exif_data[4] != "-" and not args.overwrite:
         print(f"Image {image_file_path}: Skipping, GPS data already present.")
         return
 
@@ -262,7 +263,7 @@ def process_image(image_file_path):
     update_image_gps(image_file_path, approx_location)
 
 # Use tqdm for progress bar and parallel processing
-max_workers = args['workers'] if args['workers'] > 0 else 1
+max_workers = max(1, args.workers)
 
 with ThreadPoolExecutor(max_workers=max_workers) as executor:
     list(tqdm(executor.map(process_image, file_names), total=len(file_names)))
