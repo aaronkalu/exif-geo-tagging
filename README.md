@@ -33,12 +33,12 @@ python geotag.py --json /path/to/location_data.json --dir /path/to/images/ [--to
 
 **Parameters:**
 
-- `--json` or `-j`: The path to the Google Timeline JSON file containing your location history.
-- `--dir` or `-d`: The path to the directory containing the images you want to geotag.
-- `--tolerance` or `-t`: The number of hours of tolerance to match the image timestamp with a location (default is 1 hour).
-- `--overwrite` or `-o`: Specify this flag to overwrite existing GPS data in the images.
-- `--recursive`: Specify this flag to process images in subdirectories recursively.
-- `--workers`: Specify the number of parallel workers to speed up processing (default is 1). 
+- `--json` or `-j`: Path to Google Timeline JSON file.
+- `--dir` or `-d`: Directory containing images.
+- `--tolerance` or `-t`: Tolerance in hours for matching images to locations. Default is 1 hour.
+- `--overwrite` or `-o`: Overwrite existing GPS data.
+- `--recursive` or `-r`: Process images in subdirectories recursively.
+- `--workers` or `-w`: Number of parallel workers/threads to speed up processing (default is 1).
 
 **Example:**
 
