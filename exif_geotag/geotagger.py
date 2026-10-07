@@ -99,10 +99,14 @@ class Geotagger:
         workers = max(1, workers)
         batch_size = max(1, min(MAX_BATCH_SIZE, math.ceil(len(images) / workers)))
         batches = [images[start : start + batch_size] for start in range(0, len(images), batch_size)]
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        executor = ThreadPoolExecutor(max_workers=workers)
+        try:
             futures = [executor.submit(self.process_batch, batch) for batch in batches]
             for future in as_completed(futures):
                 yield from future.result()
+        finally:
+            # Runs when the caller closes the generator early (e.g. Ctrl+C): drop queued batches, finish running ones.
+            executor.shutdown(wait=True, cancel_futures=True)
 
 
 def _failure(image: Path, error: Exception) -> Result:

@@ -1,13 +1,14 @@
 import base64
 import shutil
 import subprocess
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from exif_geotag import exiftool
-from exif_geotag.geotagger import Geotagger, Issue, Outcome, find_images
+from exif_geotag.geotagger import MAX_BATCH_SIZE, Geotagger, Issue, Outcome, find_images
 from exif_geotag.locator import LocationIndex
 from exif_geotag.timeline import Location
 
@@ -197,3 +198,25 @@ def test_find_images_works_inside_hidden_directory(tmp_path: Path) -> None:
     directory.mkdir()
     (directory / "a.jpg").touch()
     assert [p.name for p in find_images(directory, recursive=False)] == ["a.jpg"]
+
+
+def test_closing_process_all_cancels_queued_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    geotagger = Geotagger(INDEX, timedelta(hours=1))
+    processed = []
+    release = threading.Event()
+
+    def process_batch(self: Geotagger, batch: list[Path]) -> list[Path]:
+        processed.append(batch)
+        if len(processed) > 1:
+            release.wait(5)  # keep the single worker busy so later batches stay queued
+        return batch
+
+    monkeypatch.setattr(Geotagger, "process_batch", process_batch)
+    images = [Path(f"{i}.jpg") for i in range(4 * MAX_BATCH_SIZE)]
+
+    results = geotagger.process_all(images, workers=1)
+    next(results)
+    threading.Timer(0.2, release.set).start()
+    results.close()
+
+    assert len(processed) == 2
