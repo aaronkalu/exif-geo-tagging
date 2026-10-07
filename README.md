@@ -4,8 +4,9 @@ This Python script uses Google Timeline location data to geotag images by matchi
 
 ## Requirements
 
-- **Python:** Ensure Python 3.x is installed on your system.
+- **Python:** Python 3.9 or newer.
 - **ExifTool:** This script requires `exiftool` to be installed. You can download it from [ExifTool's official website](https://exiftool.org/) or install it using a package manager.
+
 ## Installation Instructions
 
 1. **Install Python**:
@@ -31,11 +32,13 @@ This Python script uses Google Timeline location data to geotag images by matchi
 
 ## Usage
 
-To use the script, navigate to the directory containing geotag.py and run the following command in your terminal:
+From the repository root run:
 
 ```bash
 python geotag.py --json /path/to/location_data.json --dir /path/to/images/ [--tolerance hours] [--overwrite] [--recursive] [--workers num]
 ```
+
+After `pip install .` you can use `geotag` instead of `python geotag.py` from any directory.
 
 **Parameters:**
 
@@ -78,7 +81,14 @@ The capture time is read from the EXIF `DateTimeOriginal` tag and converted to U
 
 ## Supported Google Timeline JSON Format
 
-The script supports the following formats of Google Timeline location data:
+The file must be a JSON array of entries. Each entry contributes timestamped points, and every image gets the point closest to its capture time:
+
+- activity: its start location at `startTime` and its end location at `endTime`
+- visit: the place location at both `startTime` and `endTime`
+- timeline path: each point at `startTime` plus `durationMinutesOffsetFromStartTime`
+
+Other entry types are ignored. Files in a different layout (for example an object with `semanticSegments`) are not supported and end with "No locations found in the timeline file."
+
 
 1. Activity Data:
 ```json
@@ -130,7 +140,7 @@ The script supports the following formats of Google Timeline location data:
 
 ## Important Notes
 
-- **Backup:** It is recommended to keep a backup of your images before running the script, especially if you are unsure about the changes.
+- **Backup:** Images are modified in place and ExifTool's `_original` backup files are not kept, so back up your images before running the script.
 - **EXIF Quality:** Modifying the EXIF data does not affect the image quality, as it only updates the metadata.
 
 ## Development
@@ -146,4 +156,5 @@ The code lives in the `exif_geotag` package:
 - `locator.py`: finds the location closest in time to a photo
 - `exiftool.py`: reads and writes image metadata through ExifTool
 - `geotagger.py`: matches images to locations and writes their GPS data
+- `report.py`: end-of-run summary and warnings
 - `cli.py`: command-line interface
