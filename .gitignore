@@ -1,9 +1,13 @@
-#Jetbrains files
+#Jetbrains Files
 .idea/
 
+# Python
 __pycache__/
 *.egg-info/
-.pytest_cache/
-.venv/
 build/
+.venv/
+uv.lock
+.pytest_cache/
+
+# macOS
 .DS_Store
