@@ -4,8 +4,9 @@ This Python script uses Google Timeline location data to geotag images by matchi
 
 ## Requirements
 
-- **Python:** Ensure Python 3.x is installed on your system.
+- **Python:** Python 3.9 or newer.
 - **ExifTool:** This script requires `exiftool` to be installed. You can download it from [ExifTool's official website](https://exiftool.org/) or install it using a package manager.
+
 ## Installation Instructions
 
 1. **Install Python**:
@@ -23,21 +24,29 @@ This Python script uses Google Timeline location data to geotag images by matchi
      sudo apt install libimage-exiftool-perl
      ```
 
+3. **Install Python dependencies** (from the repository root):
+   ```bash
+   pip install .
+   ```
+   This also installs a `geotag` command, so `geotag --json ... --dir ...` works from anywhere.
+
 ## Usage
 
-To use the script, navigate to the directory containing geotag.py and run the following command in your terminal:
+From the repository root run:
 
 ```bash
 python geotag.py --json /path/to/location_data.json --dir /path/to/images/ [--tolerance hours] [--overwrite] [--recursive] [--workers num]
 ```
 
+After `pip install .` you can use `geotag` instead of `python geotag.py` from any directory.
+
 **Parameters:**
 
 - `--json` or `-j`: Path to Google Timeline JSON file.
 - `--dir` or `-d`: Directory containing images.
-- `--tolerance` or `-t`: Tolerance in hours for matching images to locations. Default is 1 hour.
+- `--tolerance` or `-t`: Maximum time difference in hours (decimals allowed, up to 8760) between an image and its matched location. Images with no location inside this window, and not taken during a visit or activity, are skipped. Default is 1 hour.
 - `--overwrite` or `-o`: Overwrite existing GPS data.
-- `--recursive` or `-r`: Process images in subdirectories recursively.
+- `--recursive` or `-r`: Process images in subdirectories recursively. Hidden files and folders, such as macOS `._*` files and `.Trashes`, are ignored.
 - `--workers` or `-w`: Number of parallel workers/threads to speed up processing (default is 1).
 
 **Example:**
@@ -47,15 +56,42 @@ To geotag images in the directory /path/to/images/ using location data from loca
 python geotag.py --json /path/to/location_data.json --dir /path/to/images/ --tolerance 2
 ```
 
+**Run summary:**
+
+At the end of a run the script prints how many images were tagged, skipped and failed, followed by a **Warnings** section listing anything unexpected, grouped by cause with the affected files:
+
+- no JPEG images found in the directory
+- malformed timeline entries that were ignored
+- images without `DateTimeOriginal` (skipped)
+- images with no timeline location within `--tolerance` (skipped)
+- images without a timezone offset (capture time assumed to be UTC)
+- ExifTool errors (failed)
+- unexpected errors (failed); one failing image does not stop the others
+
+Images skipped because they already have GPS data are expected and not reported as warnings. The exit code is 1 if any image failed.
+
 **Supported File Formats:**
 
 This script currently supports the following image file formats:
 
-- JPEG (.jpg, .jpeg)
+- JPEG (.jpg, .jpeg, any capitalisation)
+
+**Image timestamps:**
+
+The capture time is read from the EXIF `DateTimeOriginal` tag and converted to UTC using the first offset found in `OffsetTimeOriginal`, `OffsetTimeDigitized` or `OffsetTime`. If an image has none of these, its time is assumed to already be UTC. Images without `DateTimeOriginal` are skipped.
 
 ## Supported Google Timeline JSON Format
 
-The script supports the following formats of Google Timeline location data:
+The file must be a JSON array of entries. Each entry contributes timestamped points:
+
+- activity: its start location at `startTime` and its end location at `endTime`
+- visit: the place location at both `startTime` and `endTime`
+- timeline path: each point at `startTime` plus `durationMinutesOffsetFromStartTime`
+
+Every image gets the point closest to its capture time if that point is within `--tolerance`. Otherwise, if the image was taken between the `startTime` and `endTime` of a visit or activity, it gets that entry's nearer endpoint, however long the visit or activity lasted.
+
+Other entry types are ignored. Files in a different layout (for example an object with `semanticSegments`) are not supported and stop with an error.
+
 
 1. Activity Data:
 ```json
@@ -77,8 +113,8 @@ The script supports the following formats of Google Timeline location data:
 2. Visit Data:
 ```json
 {
-  "endTime": "2024-01-01T11:00:00.000+02:00",
-  "startTime": "2024-01-01T18:00:00.000+02:00",
+  "endTime": "2024-01-01T18:00:00.000+02:00",
+  "startTime": "2024-01-01T11:00:00.000+02:00",
   "visit": {
     "hierarchyLevel": "0",
     "topCandidate": {
@@ -107,5 +143,21 @@ The script supports the following formats of Google Timeline location data:
 
 ## Important Notes
 
-- **Backup:** It is recommended to keep a backup of your images before running the script, especially if you are unsure about the changes.
+- **Backup:** Images are modified in place and ExifTool's `_original` backup files are not kept, so back up your images before running the script.
 - **EXIF Quality:** Modifying the EXIF data does not affect the image quality, as it only updates the metadata.
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+The code lives in the `exif_geotag` package:
+
+- `timeline.py`: parses Google Timeline JSON into `Location`s
+- `locator.py`: finds the location closest in time to a photo, or the visit or activity it was taken during
+- `exiftool.py`: reads image metadata in batches and writes GPS data through ExifTool
+- `geotagger.py`: matches images to locations and writes their GPS data
+- `report.py`: end-of-run summary and warnings
+- `cli.py`: command-line interface
