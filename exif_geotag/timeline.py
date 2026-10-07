@@ -23,33 +23,68 @@ class Location:
 
 
 @dataclass(frozen=True)
+class Span:
+    """A visit or activity: the whereabouts are known for the whole time between its endpoints."""
+
+    start: Location
+    end: Location
+
+    def contains(self, timestamp: datetime) -> bool:
+        return self.start.timestamp <= timestamp <= self.end.timestamp
+
+    def nearer_end(self, timestamp: datetime) -> Location:
+        if timestamp - self.start.timestamp <= self.end.timestamp - timestamp:
+            return self.start
+        return self.end
+
+
+@dataclass(frozen=True)
 class Timeline:
     locations: list[Location]
-    """Sorted by timestamp."""
+    """Every timestamped point, including span endpoints, in file order."""
+
+    spans: list[Span]
 
     malformed_entries: int
     """Unknown entry types are ignored rather than counted here."""
 
 
+class TimelineError(Exception):
+    pass
+
+
 def load_timeline(path: Path) -> Timeline:
-    with path.open(encoding="utf-8") as file:
-        entries = json.load(file)
+    try:
+        with path.open(encoding="utf-8") as file:
+            entries = json.load(file)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise TimelineError(f"Could not read timeline file {path}: {error}") from error
+    if not isinstance(entries, list):
+        raise TimelineError(f"Unsupported timeline file {path}: expected a JSON array of entries.")
     return parse_timeline(entries)
 
 
 def parse_timeline(entries: Iterable[dict[str, Any]]) -> Timeline:
     locations: list[Location] = []
+    spans: list[Span] = []
     malformed_entries = 0
     for entry in entries:
         try:
-            locations.extend(_parse_entry(entry))
+            parsed = list(_parse_entry(entry))
         except (KeyError, TypeError, ValueError):
             malformed_entries += 1
+            continue
+        for item in parsed:
+            if isinstance(item, Span):
+                spans.append(item)
+                locations += (item.start, item.end)
+            else:
+                locations.append(item)
 
-    return Timeline(sorted(locations, key=lambda location: location.timestamp), malformed_entries)
+    return Timeline(locations, spans, malformed_entries)
 
 
-def _parse_entry(entry: dict[str, Any]) -> Iterator[Location]:
+def _parse_entry(entry: dict[str, Any]) -> Iterator[Location | Span]:
     if "timelinePath" in entry:
         yield from _parse_timeline_path(entry)
     elif "activity" in entry:
@@ -72,18 +107,18 @@ def _parse_timeline_path(entry: dict[str, Any]) -> Iterator[Location]:
         yield Location(timestamp, latitude, longitude, source="timeline")
 
 
-def _parse_activity(entry: dict[str, Any]) -> Iterator[Location]:
+def _parse_activity(entry: dict[str, Any]) -> Iterator[Span]:
     activity = entry["activity"]
     start = Location(parse_timestamp(entry["startTime"]), *parse_geo_point(activity["start"]), source="activity_start")
     end = Location(parse_timestamp(entry["endTime"]), *parse_geo_point(activity["end"]), source="activity_end")
-    yield from (start, end)
+    yield Span(start, end)
 
 
-def _parse_visit(entry: dict[str, Any]) -> Iterator[Location]:
+def _parse_visit(entry: dict[str, Any]) -> Iterator[Span]:
     latitude, longitude = parse_geo_point(entry["visit"]["topCandidate"]["placeLocation"])
     start = Location(parse_timestamp(entry["startTime"]), latitude, longitude, source="visit_start")
     end = Location(parse_timestamp(entry["endTime"]), latitude, longitude, source="visit_end")
-    yield from (start, end)
+    yield Span(start, end)
 
 
 def parse_timestamp(value: str) -> datetime:

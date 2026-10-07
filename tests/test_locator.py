@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from exif_geotag.locator import LocationIndex
-from exif_geotag.timeline import Location
+from exif_geotag.timeline import Location, Span
 
 HOUR = timedelta(hours=1)
 
@@ -42,3 +42,30 @@ def test_outside_tolerance_returns_none() -> None:
 
 def test_empty_index_returns_none() -> None:
     assert LocationIndex([]).closest(at(12), HOUR) is None
+
+
+def visit(start: int, end: int, name: str) -> Span:
+    return Span(location(start, f"{name}_start"), location(end, f"{name}_end"))
+
+
+def test_timestamp_inside_long_span_uses_nearer_end() -> None:
+    long_visit = visit(11, 18, "visit")
+    index = LocationIndex([long_visit.start, long_visit.end], [long_visit])
+    assert index.closest(at(14), HOUR).source == "visit_start"
+    assert index.closest(at(15), HOUR).source == "visit_end"
+    assert index.closest(at(20), HOUR) is None
+
+
+def test_point_within_tolerance_beats_span_end() -> None:
+    long_visit = visit(11, 18, "visit")
+    index = LocationIndex([long_visit.start, location(14, "path"), long_visit.end], [long_visit])
+    assert index.closest(at(14, 30), HOUR).source == "path"
+    assert index.closest(at(16), HOUR).source == "visit_end"
+
+
+def test_overlapping_spans() -> None:
+    outer, inner = visit(8, 20, "outer"), visit(9, 10, "inner")
+    index = LocationIndex([], [inner, outer])
+    assert index.closest(at(12), HOUR).source == "outer_start"
+    assert index.closest(at(7), HOUR) is None
+    assert index.closest(at(21), HOUR) is None

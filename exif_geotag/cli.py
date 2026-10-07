@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -12,7 +13,9 @@ from exif_geotag import exiftool
 from exif_geotag.geotagger import Geotagger, find_images
 from exif_geotag.locator import LocationIndex
 from exif_geotag.report import RunReport
-from exif_geotag.timeline import load_timeline
+from exif_geotag.timeline import TimelineError, load_timeline
+
+MAX_TOLERANCE_HOURS = 24 * 365
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -28,8 +31,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("-w", "--workers", type=int, default=1, help="Number of parallel threads to use (default: 1).")
     args = parser.parse_args(argv)
 
-    if args.tolerance < 0:
-        parser.error("--tolerance must not be negative.")
+    if not (math.isfinite(args.tolerance) and 0 <= args.tolerance <= MAX_TOLERANCE_HOURS):
+        parser.error(f"--tolerance must be between 0 and {MAX_TOLERANCE_HOURS} hours.")
     if not args.json.is_file():
         parser.error(f"JSON file not found: {args.json}")
     if not args.dir.is_dir():
@@ -47,8 +50,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print("Loading data (takes a while)...")
-    timeline = load_timeline(args.json)
-    locations = LocationIndex(timeline.locations)
+    try:
+        timeline = load_timeline(args.json)
+    except TimelineError as error:
+        print(error, file=sys.stderr)
+        return 1
+    locations = LocationIndex(timeline.locations, timeline.spans)
     if not locations:
         print("No locations found in the timeline file.", file=sys.stderr)
         return 1
