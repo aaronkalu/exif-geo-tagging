@@ -1,11 +1,11 @@
-# Geotag Images with Google Timeline Data
+# Geotag Photos and Videos with Google Timeline Data
 
-This Python script uses Google Timeline location data to geotag images by matching their timestamps with the closest location from your Google location history. It adjusts the EXIF GPS coordinates of the images accordingly.
+This tool geotags photos and videos by matching their capture time against your location history: Google Timeline exports, Google Takeout `Records.json`, GPX tracks or KML files. It writes the matching GPS position into each file's metadata with ExifTool.
 
 ## Requirements
 
-- **Python:** Python 3.9 or newer.
-- **ExifTool:** This script requires `exiftool` to be installed. You can download it from [ExifTool's official website](https://exiftool.org/) or install it using a package manager.
+- **Python:** Python 3.11 or newer.
+- **ExifTool:** This tool requires `exiftool` to be installed. You can download it from [ExifTool's official website](https://exiftool.org/) or install it using a package manager.
 
 ## Installation Instructions
 
@@ -35,63 +35,99 @@ This Python script uses Google Timeline location data to geotag images by matchi
 From the repository root run:
 
 ```bash
-python geotag.py --json /path/to/location_data.json --dir /path/to/images/ [--tolerance hours] [--overwrite] [--recursive] [--workers num]
+python geotag.py --json /path/to/location_data.json --dir /path/to/images/ [options]
 ```
 
 After `pip install .` you can use `geotag` instead of `python geotag.py` from any directory.
 
 **Parameters:**
 
-- `--json` or `-j`: Path to Google Timeline JSON file.
-- `--dir` or `-d`: Directory containing images.
-- `--tolerance` or `-t`: Maximum time difference in hours (decimals allowed, up to 8760) between an image and its matched location. Images with no location inside this window, and not taken during a visit or activity, are skipped. Default is 1 hour.
+- `--json` or `-j`: Location data file(s): any Google Timeline JSON export, `Records.json`, `.gpx` or `.kml`. Give several files (`-j a.json b.gpx`) to combine them.
+- `--dir` or `-d`: Directory containing images and videos.
+- `--tolerance` or `-t`: Maximum time difference in hours (decimals allowed, up to 8760) between an image and the location data used for it. Images with no location inside this window, and not taken during a visit or activity, are skipped. Default is 1 hour.
 - `--overwrite` or `-o`: Overwrite existing GPS data.
 - `--recursive` or `-r`: Process images in subdirectories recursively. Hidden files and folders, such as macOS `._*` files and `.Trashes`, are ignored.
-- `--workers` or `-w`: Number of parallel workers/threads to speed up processing (default is 1).
+- `--workers` or `-w`: Number of parallel ExifTool processes. Default is the number of CPUs.
+- `--dry-run` or `-n`: Show what would be done without changing any file.
+- `--backup`: Keep ExifTool's `FILE_original` backup of every changed file.
+- `--log FILE`: Write one row per image (capture time, position written, its source, time difference, previous position) to a CSV file, or JSON if `FILE` ends in `.json`. Use it to review a run or to undo it.
+- `--undo LOG`: Revert the images tagged in a log written by `--log`. Images that had GPS data before (with `--overwrite`) get their previous position back; the others have their GPS data removed. Works with `--dry-run` and `--backup`.
+- `--timezone ZONE`: Time zone for files without a timezone offset, e.g. `Europe/Berlin` or `+02:00`. See [Image timestamps](#image-timestamps).
+- `--time-shift [+-]H:MM[:SS]`: Correction added to the camera clock, e.g. `+0:03:12` if the camera was 3 minutes 12 seconds slow. Write negative values with `=`: `--time-shift=-0:03:12`.
+- `--min-probability P`: Ignore visits and activities that Google rated less likely than `P` (0 to 1).
+- `--no-interpolation`: Use the nearest location point instead of interpolating between points.
+- `--quiet` or `-q`: Only print the progress bar and the summary.
 
-**Example:**
+**Examples:**
 
-To geotag images in the directory /path/to/images/ using location data from location_data.json with a 2-hour tolerance, you would run:
+Preview a run with a 2-hour tolerance and keep a log:
 ```bash
-python geotag.py --json /path/to/location_data.json --dir /path/to/images/ --tolerance 2
+python geotag.py -j location_data.json -d /path/to/images/ -t 2 --dry-run --log preview.csv
+```
+
+Tag for real, then undo it:
+```bash
+python geotag.py -j location_data.json -d /path/to/images/ --log run.csv
+python geotag.py --undo run.csv
 ```
 
 **Run summary:**
 
-At the end of a run the script prints how many images were tagged, skipped and failed, followed by a **Warnings** section listing anything unexpected, grouped by cause with the affected files:
+At the end of a run the tool prints how many images were tagged, skipped and failed, followed by a **Warnings** section listing anything unexpected, grouped by cause with the affected files:
 
-- no JPEG images found in the directory
-- malformed timeline entries that were ignored
-- images without `DateTimeOriginal` (skipped)
-- images with no timeline location within `--tolerance` (skipped)
-- images without a timezone offset (capture time assumed to be UTC)
+- no supported images or videos found in the directory
+- malformed location entries that were ignored
+- images without a capture time (skipped)
+- images with no location within `--tolerance` (skipped)
+- images without a timezone offset, whose offset was inferred from the timeline
+- images without a timezone offset where none could be inferred (capture time assumed to be UTC)
 - ExifTool errors (failed)
 - unexpected errors (failed); one failing image does not stop the others
 
-Images skipped because they already have GPS data are expected and not reported as warnings. The exit code is 1 if any image failed.
+Images skipped because they already have GPS data are expected and not reported as warnings. A GPS position of exactly 0, 0 counts as missing, because some cameras write it when they have no fix. The exit code is 1 if any image failed, and 130 if the run was interrupted with Ctrl+C (the summary then covers the images processed so far).
 
-**Supported File Formats:**
+**Supported file formats:**
 
-This script currently supports the following image file formats:
+- **Images** (written directly): JPEG, HEIC/HEIF, PNG, TIFF, WebP, DNG. The tool writes `GPSLatitude`/`GPSLongitude` with their Ref tags, `GPSDateStamp`/`GPSTimeStamp` (the capture time in UTC) and `GPSMapDatum`.
+- **RAW** (CR2, CR3, NEF, ARW, RAF, ORF, RW2, PEF and others): the RAW file is never modified. GPS data goes into an XMP sidecar: an existing `IMG_1234.CR2.xmp` (darktable style) is updated, otherwise `IMG_1234.xmp` (Adobe style) is updated or created.
+- **Videos** (MP4, MOV, M4V, 3GP): `Keys:GPSCoordinates` (read by Apple Photos) and `UserData:GPSCoordinates`.
 
-- JPEG (.jpg, .jpeg, any capitalisation)
+Files keep their modification time.
 
 **Image timestamps:**
 
-The capture time is read from the EXIF `DateTimeOriginal` tag and converted to UTC using the first offset found in `OffsetTimeOriginal`, `OffsetTimeDigitized` or `OffsetTime`. If an image has none of these, its time is assumed to already be UTC. Images without `DateTimeOriginal` are skipped.
+For photos, the capture time is read from `DateTimeOriginal`. Its timezone comes from an offset in the tag itself (XMP), or else from the first of `OffsetTimeOriginal`, `OffsetTimeDigitized` or `OffsetTime`. Videos use Apple's `CreationDate`, which includes the offset, or else the QuickTime `CreateDate`, which is UTC by specification (some cameras write local time there instead; use `--time-shift` to correct them).
 
-## Supported Google Timeline JSON Format
+When a file has no timezone offset:
 
-The file must be a JSON array of entries. Each entry contributes timestamped points:
+1. `--timezone` is used if given (daylight saving time is handled for named zones).
+2. Otherwise the offset is inferred from the timeline: Google Timeline exports record the local offset of every entry, so the tool picks the offset that matches the timeline data around the photo's local time.
+3. Otherwise (e.g. GPX data in UTC) the time is assumed to be UTC.
 
-- activity: its start location at `startTime` and its end location at `endTime`
-- visit: the place location at both `startTime` and `endTime`
-- timeline path: each point at `startTime` plus `durationMinutesOffsetFromStartTime`
+`--time-shift` is applied to the camera clock before any of this.
 
-Every image gets the point closest to its capture time if that point is within `--tolerance`. Otherwise, if the image was taken between the `startTime` and `endTime` of a visit or activity, it gets that entry's nearer endpoint, however long the visit or activity lasted.
+## How locations are matched
 
-Other entry types are ignored. Files in a different layout (for example an object with `semanticSegments`) are not supported and stop with an error.
+For each image the tool tries, in order:
 
+1. **A visit** covering the capture time, however long it lasted. If visits overlap, the innermost (higher `hierarchyLevel`, then shorter) wins.
+2. **Interpolation between the two location points** around the capture time, if both are within `--tolerance`.
+3. **An activity** (a journey) covering the capture time: the position is interpolated along the straight line from its start to its end.
+4. **The nearest location point** within `--tolerance`.
+
+With `--no-interpolation`, steps 2 and 3 are replaced by the nearest point within `--tolerance` and then the nearer end of a covering activity. Longitudes are interpolated the short way round across the antimeridian.
+
+## Supported location formats
+
+- **Google Timeline, iOS on-device export**: a JSON array of entries. Activities contribute their start and end, visits their place location at both ends, and `timelinePath` entries each point at `startTime` plus `durationMinutesOffsetFromStartTime`.
+- **Google Timeline, Android on-device export** (`Timeline.json`): an object with `semanticSegments` (visits, activities and timeline paths) and `rawSignals` (positions).
+- **Google Takeout `Records.json`**: raw location fixes with `latitudeE7`/`longitudeE7` and `timestamp` or `timestampMs`.
+- **GPX**: track points, route points and waypoints that have a `<time>`.
+- **KML**: `gx:Track` elements (as in Google Takeout KML), placemarks with a `TimeStamp`, and placemarks with a `TimeSpan` (a single point is treated as a visit, a line as an activity).
+
+Unknown entry types are ignored. Malformed entries are skipped and counted in the warnings.
+
+Example entries of the iOS export:
 
 1. Activity Data:
 ```json
@@ -141,23 +177,37 @@ Other entry types are ignored. Files in a different layout (for example an objec
 }
 ```
 
+`--min-probability` compares against the visit's or activity's own `probability`, not the `topCandidate` probability (which rates the place identification).
+
+## Performance
+
+Starting ExifTool takes far longer than tagging a photo, so each worker keeps one ExifTool process running (`-stay_open`) for the whole run: metadata is read 50 files per command and each write is a separate command, so an error only affects its own file. On a 500-photo test this is about 16 times faster than starting ExifTool for every write.
+
 ## Important Notes
 
-- **Backup:** Images are modified in place and ExifTool's `_original` backup files are not kept, so back up your images before running the script.
-- **EXIF Quality:** Modifying the EXIF data does not affect the image quality, as it only updates the metadata.
+- **Backup:** Files are modified in place. Use `--dry-run` first, `--log` to be able to `--undo`, and `--backup` (or your own backup) to keep the originals.
+- **EXIF Quality:** Modifying the metadata does not affect the image quality.
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
 pytest
+ruff check .
+mypy
 ```
 
 The code lives in the `exif_geotag` package:
 
-- `timeline.py`: parses Google Timeline JSON into `Location`s
-- `locator.py`: finds the location closest in time to a photo, or the visit or activity it was taken during
-- `exiftool.py`: reads image metadata in batches and writes GPS data through ExifTool
-- `geotagger.py`: matches images to locations and writes their GPS data
+- `timeline.py`: the `Location`, `Span` and `Timeline` model and shared parsing helpers
+- `google.py`: Google Timeline (iOS and Android exports) and `Records.json` parsers
+- `tracks.py`: GPX and KML parsers
+- `loader.py`: detects the format of a location file and loads it
+- `locator.py`: finds the position for a capture time (visits, interpolation, activities, nearest point) and infers time zones
+- `media.py`: supported file types, sidecars and file discovery
+- `exiftool.py`: a persistent ExifTool process that reads metadata in batches and writes or removes GPS data
+- `geotagger.py`: resolves capture times, matches images to locations and writes their GPS data in parallel
+- `matchlog.py`: the CSV/JSON log written by `--log`
+- `undo.py`: reverts a run from its log
 - `report.py`: end-of-run summary and warnings
 - `cli.py`: command-line interface
