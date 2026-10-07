@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
 from typing import Sequence
@@ -64,9 +65,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     geotagger = Geotagger(locations, timedelta(hours=args.tolerance), args.overwrite)
 
     report = RunReport(timeline.malformed_entries)
-    for result in tqdm(geotagger.process_all(images, args.workers), total=len(images)):
-        report.add(result)
-        tqdm.write(str(result))
+    # closing() shuts the worker pool down on Ctrl+C, so queued images are not processed after the interrupt.
+    with closing(geotagger.process_all(images, args.workers)) as results:
+        for result in tqdm(results, total=len(images)):
+            report.add(result)
+            tqdm.write(str(result))
 
     print(report.render())
     return 1 if report.has_failures else 0
