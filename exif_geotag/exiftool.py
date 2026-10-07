@@ -1,17 +1,39 @@
 from __future__ import annotations
 
 import json
+import queue
+import re
 import subprocess
-from dataclasses import dataclass
-from datetime import datetime, timezone, tzinfo
+import threading
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Sequence
+from typing import IO, Any
 
-from exif_geotag.timeline import Location
+from exif_geotag.media import MediaKind, media_kind, sidecar_for, write_target
 
-_EXIF_DATETIME_FORMAT = "%Y:%m:%d %H:%M:%S"
 # OffsetTime belongs to ModifyDate, which editing software may change later, so it is the last resort.
 _OFFSET_TAGS = ("OffsetTimeOriginal", "OffsetTimeDigitized", "OffsetTime")
+# Every tag write_gps changes, per kind, including those ExifTool changes for it: an unqualified EXIF tag also
+# updates the same tag where it already exists in XMP, and the first EXIF GPS tag creates GPSVersionID.
+_WRITTEN_TAGS = {
+    MediaKind.IMAGE: (
+        "GPS:GPSVersionID", "GPS:GPSLatitude", "GPS:GPSLatitudeRef", "GPS:GPSLongitude", "GPS:GPSLongitudeRef",
+        "GPS:GPSMapDatum", "GPS:GPSDateStamp", "GPS:GPSTimeStamp",
+        "XMP-exif:GPSLatitude", "XMP-exif:GPSLongitude", "XMP-exif:GPSMapDatum",
+    ),
+    MediaKind.RAW: ("XMP-exif:GPSLatitude", "XMP-exif:GPSLongitude", "XMP-exif:GPSMapDatum", "XMP-exif:GPSDateTime"),
+    MediaKind.VIDEO: ("Keys:GPSCoordinates", "UserData:GPSCoordinates"),
+}
+_RESTORABLE_TAGS = frozenset(tag for tags in _WRITTEN_TAGS.values() for tag in tags)
+_READ_TAGS = (
+    "DateTimeOriginal", *_OFFSET_TAGS, "Keys:CreationDate", "QuickTime:CreateDate",
+    "Composite:GPSLatitude", "Composite:GPSLongitude", "GPSLatitude", "GPSLongitude", "GPSCoordinates",
+    *sorted(_RESTORABLE_TAGS),
+)
+_DATETIME = re.compile(r"^(\d{4}:\d{2}:\d{2} \d{2}:\d{2}:\d{2})(?:\.\d+)?\s*(Z|[+-]\d{2}:?\d{2})?")
+_NOT_INSTALLED = "ExifTool is not installed. Please install ExifTool to use this script."
 
 
 class ExifToolError(RuntimeError):
@@ -20,107 +42,312 @@ class ExifToolError(RuntimeError):
 
 @dataclass(frozen=True)
 class ImageMetadata:
-    taken_at: datetime | None
-    """In UTC."""
+    local_time: datetime | None
+    """Naive, as shown by the camera clock."""
 
-    has_timezone: bool
-    """If False, `taken_at` was assumed to be UTC."""
+    utc_offset: timedelta | None
+    """None if the file does not say which time zone `local_time` is in."""
 
     has_gps: bool
+    position: tuple[float, float] | None = None
+    """Existing signed latitude and longitude, if readable."""
+
+    utc_by_specification: bool = False
+    """`local_time` is a QuickTime CreateDate: UTC by specification, but local time on many cameras."""
+
+    gps_tags: Mapping[str, Any] = field(default_factory=dict)
+    """The existing values, as "Group:Tag", of the tags write_gps would change; restore_gps writes them back."""
 
 
 def version() -> str:
     try:
-        return _run("-ver").strip()
+        result = subprocess.run(["exiftool", "-ver"], capture_output=True, text=True)
     except FileNotFoundError as error:
-        raise ExifToolError("ExifTool is not installed. Please install ExifTool to use this script.") from error
+        raise ExifToolError(_NOT_INSTALLED) from error
+    if result.returncode != 0:
+        raise ExifToolError(result.stderr.strip() or f"exiftool exited with status {result.returncode}")
+    return result.stdout.strip()
 
 
-def read_metadata(image: Path) -> ImageMetadata:
-    metadata = read_metadata_batch([image])[image]
-    if isinstance(metadata, ExifToolError):
-        raise metadata
-    return metadata
+class ExifTool:
+    """One long-running `exiftool -stay_open` process.
 
+    Starting ExifTool (Perl) takes far longer than reading or writing a typical photo, so every command reuses
+    this process. Not thread-safe: use one instance per thread.
+    """
 
-def read_metadata_batch(images: Sequence[Path]) -> dict[Path, ImageMetadata | ExifToolError]:
-    """Reads all images with one ExifTool process; a file that cannot be read gets an error instead of metadata."""
-    result = _execute(
-        "-json", "-n", "-charset", "filename=utf8", "-Error", "-DateTimeOriginal", *(f"-{tag}" for tag in _OFFSET_TAGS),
-        "-GPSLatitude", "-GPSLongitude", "-@", "-",
-        stdin="".join(f"{image}\n" for image in images),
-    )
-    # ExifTool exits non-zero if any file is unreadable but still reports the others.
-    try:
-        records = json.loads(result.stdout) if result.stdout.strip() else []
-    except json.JSONDecodeError as error:
-        raise ExifToolError(f"unreadable ExifTool output: {error}") from error
-    tags_by_image = {Path(tags["SourceFile"]): tags for tags in records}
+    def __init__(self) -> None:
+        try:
+            self._process = subprocess.Popen(
+                [
+                    "exiftool", "-stay_open", "True", "-@", "-",
+                    "-common_args", "-charset", "filename=utf8",
+                ],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError as error:
+            raise ExifToolError(_NOT_INSTALLED) from error
+        self._sequence = 0
+        # Drained on a thread so a burst of messages cannot fill the pipe and block ExifTool while we read stdout.
+        self._stderr_lines: queue.SimpleQueue[str | None] = queue.SimpleQueue()
+        threading.Thread(target=_pump_lines, args=(self._process.stderr, self._stderr_lines), daemon=True).start()
 
-    stderr_lines = result.stderr.splitlines()
-    metadata: dict[Path, ImageMetadata | ExifToolError] = {}
-    for image in images:
-        tags = tags_by_image.get(image)
-        if tags is None:
-            reasons = [line for line in stderr_lines if line.endswith(f" - {image}")]
-            metadata[image] = ExifToolError("; ".join(reasons) or "no metadata returned by ExifTool")
-        elif "Error" in tags:
-            metadata[image] = ExifToolError(str(tags["Error"]))
+    def __enter__(self) -> ExifTool:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    @property
+    def alive(self) -> bool:
+        return self._process.poll() is None
+
+    def close(self) -> None:
+        if self.alive:
+            try:
+                self._send(["-stay_open", "False"])
+                self._process.wait(timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                self._process.kill()
+                self._process.wait()
+        for pipe in (self._process.stdin, self._process.stdout, self._process.stderr):
+            if pipe is not None:
+                pipe.close()
+
+    def execute(self, *arguments: str) -> tuple[str, str]:
+        if any("\n" in argument or "\r" in argument for argument in arguments):
+            raise ExifToolError("arguments containing line breaks cannot be passed to ExifTool")
+        if not self.alive:
+            raise ExifToolError("ExifTool exited unexpectedly")
+        self._sequence += 1
+        marker = f"{{ready{self._sequence}}}"
+        try:
+            self._send([*arguments, "-echo4", marker, f"-execute{self._sequence}"])
+        except OSError as error:
+            raise ExifToolError(f"ExifTool exited unexpectedly: {error}") from error
+
+        assert self._process.stdout is not None
+        stdout = []
+        while (line := self._process.stdout.readline()) != b"":
+            text = line.decode("utf-8", errors="replace").rstrip("\r\n")
+            if text == marker:
+                break
+            stdout.append(text)
         else:
-            metadata[image] = _to_metadata(tags)
-    return metadata
+            raise ExifToolError("ExifTool exited unexpectedly")
+
+        stderr = []
+        while (message := self._stderr_lines.get()) != marker:
+            if message is None:
+                raise ExifToolError("ExifTool exited unexpectedly")
+            stderr.append(message)
+        return "\n".join(stdout), "\n".join(stderr)
+
+    def read_metadata(self, images: Sequence[Path]) -> dict[Path, ImageMetadata | ExifToolError]:
+        """Reads all images with one command; a file that cannot be read gets an error instead of metadata."""
+        sidecars = {
+            image: sidecar for image in images
+            if media_kind(image) is MediaKind.RAW and (sidecar := sidecar_for(image)).is_file()
+        }
+        readable = [path for path in (*images, *sidecars.values()) if not _has_line_break(path)]
+        tags_by_file, stderr_lines = self._read_tags(readable) if readable else ({}, [])
+
+        metadata: dict[Path, ImageMetadata | ExifToolError] = {}
+        for image in images:
+            result = _metadata_or_error(image, tags_by_file, stderr_lines)
+            image_sidecar = sidecars.get(image)
+            if image_sidecar is not None and isinstance(result, ImageMetadata):
+                sidecar_result = _metadata_or_error(image_sidecar, tags_by_file, stderr_lines)
+                if isinstance(sidecar_result, ExifToolError):
+                    result = ExifToolError(f"sidecar {image_sidecar.name}: {sidecar_result}")
+                else:
+                    result = _merge_sidecar(result, sidecar_result)
+            elif media_kind(image) is MediaKind.RAW and isinstance(result, ImageMetadata):
+                # GPS tags inside the RAW file are never written, so there is nothing of them to restore.
+                result = replace(result, gps_tags={})
+            metadata[image] = result
+        return metadata
+
+    def write_gps(
+        self,
+        image: Path,
+        latitude: float,
+        longitude: float,
+        gps_time: datetime | None = None,
+        keep_backup: bool = False,
+    ) -> None:
+        """Writes into the image itself, or into its XMP sidecar for RAW files (creating it if needed)."""
+        kind = media_kind(image)
+        if kind is MediaKind.VIDEO:
+            coordinates = f"{latitude}, {longitude}"
+            tags = [f"-Keys:GPSCoordinates={coordinates}", f"-UserData:GPSCoordinates={coordinates}"]
+        elif kind is MediaKind.RAW:
+            tags = [
+                f"-XMP-exif:GPSLatitude={latitude}",
+                f"-XMP-exif:GPSLongitude={longitude}",
+                "-XMP-exif:GPSMapDatum=WGS-84",
+            ]
+            if gps_time is not None:
+                tags.append(f"-XMP-exif:GPSDateTime={gps_time.astimezone(UTC):%Y:%m:%d %H:%M:%S}Z")
+        else:
+            # Signed values, so groups without a Ref tag (XMP) keep the hemisphere;
+            # ExifTool derives N/S/E/W from the sign.
+            tags = [
+                f"-GPSLatitude={latitude}", f"-GPSLatitudeRef={latitude}",
+                f"-GPSLongitude={longitude}", f"-GPSLongitudeRef={longitude}",
+                "-GPSMapDatum=WGS-84",
+            ]
+            if gps_time is not None:
+                utc = gps_time.astimezone(UTC)
+                tags += [f"-GPSDateStamp={utc:%Y:%m:%d}", f"-GPSTimeStamp={utc:%H:%M:%S}"]
+        self._write(image, tags, keep_backup)
+
+    def restore_gps(self, image: Path, gps_tags: Mapping[str, Any], keep_backup: bool = False) -> None:
+        """Tags missing from `gps_tags` are deleted, so restoring `{}` removes the GPS data write_gps added."""
+        kind = media_kind(image)
+        if kind is None:
+            raise ExifToolError(f"unsupported file type: {image.suffix}")
+        tags = [
+            f"-{tag}#={gps_tags[tag]}" if tag in gps_tags else f"-{tag}="
+            for tag in _WRITTEN_TAGS[kind]
+        ]
+        if kind is MediaKind.IMAGE and not any(tag.startswith("GPS:") for tag in gps_tags):
+            tags.append("-GPS:all=")
+        self._write(image, tags, keep_backup)
+
+    def _write(self, image: Path, tags: list[str], keep_backup: bool) -> None:
+        stdout, stderr = self.execute(
+            *tags, "-P", *([] if keep_backup else ["-overwrite_original"]), _argument(write_target(image))
+        )
+        errors = [line for line in stderr.splitlines() if line.startswith("Error")]
+        if errors or "weren't updated" in stdout or "weren't created" in stdout:
+            raise ExifToolError("; ".join(errors) or stdout.strip())
+
+    def _read_tags(self, files: Sequence[Path]) -> tuple[dict[Path, dict[str, Any]], list[str]]:
+        stdout, stderr = self.execute(
+            "-json", "-n", "-G1", "-Error", *(f"-{tag}" for tag in _READ_TAGS), *(_argument(file) for file in files)
+        )
+        try:
+            records = json.loads(stdout) if stdout.strip() else []
+        except json.JSONDecodeError as error:
+            raise ExifToolError(f"unreadable ExifTool output: {error}") from error
+        return {Path(tags["SourceFile"]): tags for tags in records}, stderr.splitlines()
+
+    def _send(self, lines: list[str]) -> None:
+        assert self._process.stdin is not None
+        self._process.stdin.write("".join(f"{line}\n" for line in lines).encode("utf-8"))
+        self._process.stdin.flush()
+
+
+def _pump_lines(pipe: IO[bytes], lines: queue.SimpleQueue[str | None]) -> None:
+    for line in pipe:
+        lines.put(line.decode("utf-8", errors="replace").rstrip("\r\n"))
+    lines.put(None)
+
+
+def _argument(path: Path) -> str:
+    # In an argument file a line starting with "#" is a comment, one starting with "-" an option, and leading
+    # white space is dropped; an absolute path starts with none of them.
+    return str(path.absolute())
+
+
+def _has_line_break(path: Path) -> bool:
+    return "\n" in str(path) or "\r" in str(path)
+
+
+def _metadata_or_error(
+    file: Path, tags_by_file: dict[Path, dict[str, Any]], stderr_lines: list[str]
+) -> ImageMetadata | ExifToolError:
+    if _has_line_break(file):
+        return ExifToolError("file names containing line breaks are not supported")
+    tags = tags_by_file.get(file.absolute())
+    if tags is None:
+        reasons = [line for line in stderr_lines if line.endswith(f" - {_argument(file)}")]
+        return ExifToolError("; ".join(reasons) or "no metadata returned by ExifTool")
+    error = _tag(tags, "Error")
+    if error is not None:
+        return ExifToolError(str(error))
+    return _to_metadata(tags)
 
 
 def _to_metadata(tags: dict[str, Any]) -> ImageMetadata:
-    offsets = (_parse_offset(tags.get(tag)) for tag in _OFFSET_TAGS)
-    offset = next((offset for offset in offsets if offset is not None), None)
-    return ImageMetadata(
-        taken_at=_parse_capture_time(tags.get("DateTimeOriginal"), offset or timezone.utc),
-        has_timezone=offset is not None,
-        has_gps="GPSLatitude" in tags or "GPSLongitude" in tags,
+    local_time, offset, utc_by_specification = _capture_time(tags)
+    # EXIF stores unsigned values plus a Ref tag; the Composite tag combines them. XMP files have no Composite tag
+    # but store signed values themselves.
+    position = _position(tags, "Composite") or _position(tags, "XMP-exif")
+    has_gps = any(_tag(tags, name) is not None for name in ("GPSLatitude", "GPSLongitude", "GPSCoordinates"))
+    if position == (0.0, 0.0):  # placeholder some cameras write when they have no fix
+        has_gps, position = False, None
+    gps_tags = {key: value for key, value in tags.items() if key in _RESTORABLE_TAGS}
+    return ImageMetadata(local_time, offset, has_gps, position, utc_by_specification, gps_tags)
+
+
+def _capture_time(tags: dict[str, Any]) -> tuple[datetime | None, timedelta | None, bool]:
+    original = _parse_datetime(_tag(tags, "DateTimeOriginal"))
+    if original is not None:
+        local_time, offset = original
+        if offset is None:
+            offsets = (_parse_offset(_tag(tags, tag)) for tag in _OFFSET_TAGS)
+            offset = next((offset for offset in offsets if offset is not None), None)
+        return local_time, offset, False
+    # Videos: Apple's CreationDate carries the local offset. QuickTime CreateDate is read without the QuickTimeUTC
+    # option, which would attach the computer's offset and hide that cameras such as GoPro, DJI or Sony store
+    # local time there.
+    creation = _parse_datetime(_tag(tags, "CreationDate", "Keys"))
+    if creation is not None:
+        return *creation, False
+    create = _parse_datetime(_tag(tags, "CreateDate", "QuickTime"))
+    if create is not None:
+        return create[0], None, True
+    return None, None, False
+
+
+def _position(tags: dict[str, Any], group: str) -> tuple[float, float] | None:
+    latitude, longitude = _tag(tags, "GPSLatitude", group), _tag(tags, "GPSLongitude", group)
+    return (float(latitude), float(longitude)) if _is_number(latitude) and _is_number(longitude) else None
+
+
+def _merge_sidecar(raw: ImageMetadata, sidecar: ImageMetadata) -> ImageMetadata:
+    merged = replace(
+        raw, has_gps=raw.has_gps or sidecar.has_gps, position=sidecar.position or raw.position,
+        gps_tags=sidecar.gps_tags,
     )
+    if merged.local_time is None:
+        merged = replace(merged, local_time=sidecar.local_time, utc_offset=sidecar.utc_offset)
+    return merged
 
 
-def write_gps(image: Path, location: Location) -> None:
-    # Signed values, so groups without a Ref tag (XMP) keep the hemisphere; ExifTool derives N/S/E/W from the sign.
-    _run(
-        "-overwrite_original",
-        f"-GPSLatitude={location.latitude}",
-        f"-GPSLatitudeRef={location.latitude}",
-        f"-GPSLongitude={location.longitude}",
-        f"-GPSLongitudeRef={location.longitude}",
-        str(image),
-    )
+def _tag(tags: dict[str, Any], name: str, group: str | None = None) -> Any:
+    for key, value in tags.items():
+        key_group, _, key_name = key.rpartition(":")
+        if key_name == name and (group is None or key_group == group):
+            return value
+    return None
 
 
-def _parse_capture_time(date_time: object, offset: tzinfo) -> datetime | None:
-    if not isinstance(date_time, str):
+def _parse_datetime(value: object) -> tuple[datetime, timedelta | None] | None:
+    if not isinstance(value, str):
+        return None
+    match = _DATETIME.match(value.strip())
+    if not match:
         return None
     try:
-        local_time = datetime.strptime(date_time[:19], _EXIF_DATETIME_FORMAT)
+        local_time = datetime.strptime(match[1], "%Y:%m:%d %H:%M:%S")
     except ValueError:  # e.g. the placeholder "0000:00:00 00:00:00"
         return None
-    return local_time.replace(tzinfo=offset).astimezone(timezone.utc)
+    return local_time, _parse_offset(match[2])
 
 
-def _parse_offset(offset: object) -> tzinfo | None:
+def _parse_offset(offset: object) -> timedelta | None:
     if not isinstance(offset, str):
         return None
+    if offset.strip() in ("Z", "z"):
+        return timedelta(0)
     try:
-        return datetime.strptime(offset, "%z").tzinfo
+        return datetime.strptime(offset.strip(), "%z").utcoffset()
     except ValueError:
         return None
 
 
-def _run(*arguments: str) -> str:
-    result = _execute(*arguments)
-    if result.returncode != 0:
-        raise ExifToolError(result.stderr.strip() or f"exiftool exited with status {result.returncode}")
-    return result.stdout
-
-
-def _execute(*arguments: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
-    # ExifTool writes UTF-8 regardless of the locale, which may not be UTF-8 (e.g. cp1252 on Windows).
-    return subprocess.run(
-        ["exiftool", *arguments], input=stdin, capture_output=True, text=True, encoding="utf-8", errors="replace"
-    )
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)

@@ -49,4 +49,11 @@ def test_long_image_lists_are_truncated() -> None:
 
 
 def test_warns_when_no_images_found() -> None:
-    assert "  - no JPEG images found" in RunReport().render().splitlines()
+    assert "  - no supported images or videos found" in RunReport().render().splitlines()
+
+
+def test_dry_run_and_interrupted_headings() -> None:
+    assert RunReport(dry_run=True).render().startswith("Dry run, no files were changed. Would have: 0 tagged")
+    report = RunReport()
+    report.interrupted = True
+    assert report.render() == "Interrupted, processed so far: 0 tagged, 0 skipped, 0 failed."

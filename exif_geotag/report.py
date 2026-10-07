@@ -9,8 +9,10 @@ MAX_LISTED_IMAGES = 5
 
 
 class RunReport:
-    def __init__(self, malformed_timeline_entries: int = 0) -> None:
+    def __init__(self, malformed_timeline_entries: int = 0, dry_run: bool = False, interrupted: bool = False) -> None:
         self._malformed_timeline_entries = malformed_timeline_entries
+        self._dry_run = dry_run
+        self.interrupted = interrupted
         self._outcomes: Counter[Outcome] = Counter()
         self._images_by_issue: dict[Issue, list[Path]] = defaultdict(list)
 
@@ -25,7 +27,13 @@ class RunReport:
 
     def render(self) -> str:
         counts = ", ".join(f"{self._outcomes[outcome]} {outcome.value}" for outcome in Outcome)
-        lines = [f"Done. {counts}."]
+        if self.interrupted:
+            heading = "Interrupted, processed so far:"
+        elif self._dry_run:
+            heading = "Dry run, no files were changed. Would have:"
+        else:
+            heading = "Done."
+        lines = [f"{heading} {counts}."]
 
         warnings = self._warning_lines()
         if warnings:
@@ -34,8 +42,8 @@ class RunReport:
 
     def _warning_lines(self) -> list[str]:
         lines = []
-        if not self._outcomes:
-            lines.append("  - no JPEG images found")
+        if not self._outcomes and not self.interrupted:
+            lines.append("  - no supported images or videos found")
         if self._malformed_timeline_entries:
             count = self._malformed_timeline_entries
             lines.append(f"  - {count} malformed timeline {'entry' if count == 1 else 'entries'} ignored")
