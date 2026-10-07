@@ -6,7 +6,7 @@ import pytest
 
 from exif_geotag.google import parse_timeline
 from exif_geotag.loader import load_timeline
-from exif_geotag.timeline import SpanKind, TimelineError, parse_geo_point, parse_local_timestamp, parse_timestamp
+from exif_geotag.timeline import SpanKind, TimelineError, parse_geo_point, parse_local_timestamp
 
 
 def utc(*args: int) -> datetime:
@@ -19,10 +19,10 @@ def write(tmp_path: Path, name: str, content: object) -> Path:
     return path
 
 
-def test_parse_timestamp_converts_offset_to_utc() -> None:
-    assert parse_timestamp("2024-01-01T11:00:00.000+02:00") == utc(2024, 1, 1, 9)
-    assert parse_timestamp("2024-01-01T11:00:00.00-05:30") == utc(2024, 1, 1, 16, 30)
-    assert parse_timestamp("2024-01-01T11:00:00Z") == utc(2024, 1, 1, 11)
+def test_parse_local_timestamp_converts_offset_to_utc() -> None:
+    assert parse_local_timestamp("2024-01-01T11:00:00.000+02:00")[0] == utc(2024, 1, 1, 9)
+    assert parse_local_timestamp("2024-01-01T11:00:00.00-05:30")[0] == utc(2024, 1, 1, 16, 30)
+    assert parse_local_timestamp("2024-01-01T11:00:00Z")[0] == utc(2024, 1, 1, 11)
 
 
 def test_parse_local_timestamp_keeps_offset_but_not_for_z() -> None:
@@ -32,9 +32,9 @@ def test_parse_local_timestamp_keeps_offset_but_not_for_z() -> None:
 
 
 @pytest.mark.parametrize("value", ["yesterday", "2024-01-01T11:00:00", 42])
-def test_parse_timestamp_rejects_garbage_and_naive_times(value: object) -> None:
+def test_parse_local_timestamp_rejects_garbage_and_naive_times(value: object) -> None:
     with pytest.raises((ValueError, TypeError)):
-        parse_timestamp(value)  # type: ignore[arg-type]
+        parse_local_timestamp(value)  # type: ignore[arg-type]
 
 
 def test_parse_geo_point_formats() -> None:

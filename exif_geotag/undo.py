@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import json
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +12,7 @@ from exif_geotag import exiftool
 
 class UndoOutcome(enum.Enum):
     RESTORED = "restored"
-    """The image had GPS data before and it was overwritten: the old position was written back."""
+    """The image had GPS tags before the run: they were written back."""
 
     REMOVED = "removed"
     FAILED = "failed"
@@ -43,23 +44,25 @@ def undo(rows: list[dict[str, Any]], dry_run: bool = False, keep_backup: bool = 
 def _undo_row(tool: exiftool.ExifTool, row: dict[str, Any], dry_run: bool, keep_backup: bool) -> UndoResult:
     image = Path(str(row.get("image", "")))
     try:
-        previous = _position(row.get("previous_latitude"), row.get("previous_longitude"))
-        if previous is not None:
-            if not dry_run:
-                tool.write_gps(image, *previous, keep_backup=keep_backup)
-            message = f"{'Would restore' if dry_run else 'Restored'} previous GPS {previous}."
-            return UndoResult(image, UndoOutcome.RESTORED, message)
+        previous = _gps_tags(row.get("previous_gps_tags"))
         if not dry_run:
-            tool.remove_gps(image, keep_backup=keep_backup)
+            tool.restore_gps(image, previous, keep_backup=keep_backup)
+        if previous:
+            message = f"{'Would restore' if dry_run else 'Restored'} previous GPS data."
+            return UndoResult(image, UndoOutcome.RESTORED, message)
         return UndoResult(image, UndoOutcome.REMOVED, f"{'Would remove' if dry_run else 'Removed'} GPS data.")
     except Exception as error:
         return UndoResult(image, UndoOutcome.FAILED, f"Failed: {error}")
 
 
-def _position(latitude: Any, longitude: Any) -> tuple[float, float] | None:
-    if latitude in (None, "") or longitude in (None, ""):
-        return None
-    return float(latitude), float(longitude)
+def _gps_tags(value: Any) -> dict[str, Any]:
+    """CSV logs hold the tags as a JSON string, JSON logs as an object."""
+    if value is None:
+        raise ValueError("log has no previous_gps_tags, so the previous GPS data is unknown")
+    tags = json.loads(value) if isinstance(value, str) else value
+    if not isinstance(tags, dict):
+        raise ValueError(f"unreadable previous_gps_tags: {value!r}")
+    return tags
 
 
 def _is_true(value: Any) -> bool:

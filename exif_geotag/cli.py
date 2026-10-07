@@ -60,8 +60,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--timezone", type=_timezone, metavar="ZONE",
-        help="Time zone for files without a timezone offset, e.g. Europe/Berlin or +02:00. "
-        "Default: inferred from the timeline, else UTC.",
+        help="Time zone for files without a timezone offset, e.g. Europe/Berlin or +02:00. Also applies to videos "
+        "with only a QuickTime CreateDate, which phones write in UTC but many cameras in local time. "
+        "Default: inferred from the timeline (videos: UTC), else UTC.",
     )
     parser.add_argument(
         "--time-shift", type=_time_shift, default=timedelta(0), metavar="[+-]H:MM[:SS]",
@@ -129,10 +130,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         time_shift=args.time_shift, assumed_timezone=args.timezone,
     )
 
+    try:
+        log = MatchLog(args.log) if args.log else None
+    except OSError as error:
+        print(f"Could not write log file {args.log}: {error}", file=sys.stderr)
+        return 1
+
     report = RunReport(timeline.malformed_entries, dry_run=args.dry_run)
     try:
         with ExitStack() as stack:
-            log = stack.enter_context(MatchLog(args.log)) if args.log else None
+            if log is not None:
+                stack.enter_context(log)
             # closing() shuts the worker pool down on Ctrl+C, so queued images are not processed after the interrupt.
             results = stack.enter_context(closing(geotagger.process_all(images, args.workers)))
             for result in tqdm(results, total=len(images)):

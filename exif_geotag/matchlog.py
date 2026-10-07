@@ -9,7 +9,7 @@ from exif_geotag.geotagger import Result
 
 FIELDS = (
     "image", "outcome", "dry_run", "taken_at_utc", "latitude", "longitude", "source", "time_difference_seconds",
-    "previous_latitude", "previous_longitude", "message",
+    "previous_latitude", "previous_longitude", "previous_gps_tags", "message",
 )
 
 
@@ -34,6 +34,8 @@ class MatchLog:
     def add(self, result: Result) -> None:
         row = _row(result)
         if self._csv is not None:
+            if row["previous_gps_tags"] is not None:
+                row["previous_gps_tags"] = json.dumps(row["previous_gps_tags"])
             self._csv.writerow({key: "" if value is None else value for key, value in row.items()})
             self._file.flush()  # keep what is done if the run is interrupted
         else:
@@ -71,5 +73,6 @@ def _row(result: Result) -> dict[str, Any]:
         "time_difference_seconds": int(result.match.time_difference.total_seconds()) if result.match else None,
         "previous_latitude": previous[0] if previous else None,
         "previous_longitude": previous[1] if previous else None,
+        "previous_gps_tags": dict(result.previous_gps_tags) if result.previous_gps_tags is not None else None,
         "message": result.message,
     }

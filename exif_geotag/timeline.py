@@ -110,10 +110,6 @@ def collect(entries: Iterable[_Entry], parse_entry: Callable[[_Entry], Iterator[
     return Timeline(locations, spans, malformed_entries)
 
 
-def parse_timestamp(value: str) -> datetime:
-    return parse_local_timestamp(value)[0]
-
-
 def parse_local_timestamp(value: str) -> tuple[datetime, timedelta | None]:
     """The time in UTC and its local UTC offset; "Z" is treated as an unknown offset, since exports use it for UTC."""
     if not isinstance(value, str):

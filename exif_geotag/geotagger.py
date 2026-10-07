@@ -3,11 +3,12 @@ from __future__ import annotations
 import enum
 import math
 import threading
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
+from typing import Any
 
 from exif_geotag import exiftool
 from exif_geotag.locator import LocationIndex, Match
@@ -28,6 +29,9 @@ class Issue(enum.Enum):
     NO_NEARBY_LOCATION = "no timeline location within tolerance (skipped)"
     TIMEZONE_INFERRED = "no timezone offset in metadata (inferred from the timeline)"
     MISSING_TIMEZONE = "no timezone offset in metadata (capture time assumed to be UTC)"
+    VIDEO_TIME_ASSUMED_UTC = (
+        "video with only QuickTime CreateDate (assumed to be UTC; use --timezone if the camera stores local time)"
+    )
     EXIFTOOL_ERROR = "ExifTool error (failed)"
     UNEXPECTED_ERROR = "unexpected error (failed)"
 
@@ -43,6 +47,9 @@ class Result:
 
     match: Match | None = None
     previous_position: tuple[float, float] | None = None
+    previous_gps_tags: Mapping[str, Any] | None = None
+    """What `--undo` writes back; None unless tagged."""
+
     dry_run: bool = False
 
     def __str__(self) -> str:
@@ -86,7 +93,7 @@ class Geotagger:
             message = "Skipping, no capture time in metadata."
             return Result(image, Outcome.SKIPPED, message, (Issue.MISSING_CAPTURE_TIME,))
 
-        taken_at, issues = self._capture_time_in_utc(metadata.local_time + self.time_shift, metadata.utc_offset)
+        taken_at, issues = self._capture_time_in_utc(metadata.local_time + self.time_shift, metadata)
         match = self.locations.locate(taken_at, self.tolerance)
         if match is None:
             message = f"Skipping, no location within {self.tolerance} of {taken_at:%Y-%m-%d %H:%M:%S} UTC."
@@ -99,16 +106,18 @@ class Geotagger:
         message = f"{verb} GPS from {location}, {_describe(match.time_difference)} from the photo."
         return Result(
             image, Outcome.TAGGED, message, issues, taken_at, match, metadata.position if metadata.has_gps else None,
-            self.dry_run,
+            metadata.gps_tags, self.dry_run,
         )
 
     def _capture_time_in_utc(
-        self, local_time: datetime, offset: timedelta | None
+        self, local_time: datetime, metadata: exiftool.ImageMetadata
     ) -> tuple[datetime, tuple[Issue, ...]]:
-        if offset is not None:
-            return (local_time - offset).replace(tzinfo=UTC), ()
+        if metadata.utc_offset is not None:
+            return (local_time - metadata.utc_offset).replace(tzinfo=UTC), ()
         if self.assumed_timezone is not None:
             return local_time.replace(tzinfo=self.assumed_timezone).astimezone(UTC), ()
+        if metadata.utc_by_specification:
+            return local_time.replace(tzinfo=UTC), (Issue.VIDEO_TIME_ASSUMED_UTC,)
         inferred = self.locations.utc_offset_at(local_time)
         if inferred is not None:
             return (local_time - inferred).replace(tzinfo=UTC), (Issue.TIMEZONE_INFERRED,)

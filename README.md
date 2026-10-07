@@ -50,8 +50,8 @@ After `pip install .` you can use `geotag` instead of `python geotag.py` from an
 - `--workers` or `-w`: Number of parallel ExifTool processes. Default is the number of CPUs.
 - `--dry-run` or `-n`: Show what would be done without changing any file.
 - `--backup`: Keep ExifTool's `FILE_original` backup of every changed file.
-- `--log FILE`: Write one row per image (capture time, position written, its source, time difference, previous position) to a CSV file, or JSON if `FILE` ends in `.json`. Use it to review a run or to undo it.
-- `--undo LOG`: Revert the images tagged in a log written by `--log`. Images that had GPS data before (with `--overwrite`) get their previous position back; the others have their GPS data removed. Works with `--dry-run` and `--backup`.
+- `--log FILE`: Write one row per image (capture time, position written, its source, time difference, previous position and GPS tags) to a CSV file, or JSON if `FILE` ends in `.json`. Use it to review a run or to undo it.
+- `--undo LOG`: Revert the images tagged in a log written by `--log`. Every GPS tag the run changed gets its previous value back (position, datum and GPS time), and tags the run added are removed. Works with `--dry-run` and `--backup`.
 - `--timezone ZONE`: Time zone for files without a timezone offset, e.g. `Europe/Berlin` or `+02:00`. See [Image timestamps](#image-timestamps).
 - `--time-shift [+-]H:MM[:SS]`: Correction added to the camera clock, e.g. `+0:03:12` if the camera was 3 minutes 12 seconds slow. Write negative values with `=`: `--time-shift=-0:03:12`.
 - `--min-probability P`: Ignore visits and activities that Google rated less likely than `P` (0 to 1).
@@ -96,7 +96,7 @@ Files keep their modification time.
 
 **Image timestamps:**
 
-For photos, the capture time is read from `DateTimeOriginal`. Its timezone comes from an offset in the tag itself (XMP), or else from the first of `OffsetTimeOriginal`, `OffsetTimeDigitized` or `OffsetTime`. Videos use Apple's `CreationDate`, which includes the offset, or else the QuickTime `CreateDate`, which is UTC by specification (some cameras write local time there instead; use `--time-shift` to correct them).
+For photos, the capture time is read from `DateTimeOriginal`. Its timezone comes from an offset in the tag itself (XMP), or else from the first of `OffsetTimeOriginal`, `OffsetTimeDigitized` or `OffsetTime`. Videos use Apple's `CreationDate`, which includes the offset, or else the QuickTime `CreateDate`. That is UTC by specification, and phones write it so, but many cameras (GoPro, DJI, Sony and others) write local time there: such videos are assumed to be UTC, with a warning, unless `--timezone` is given.
 
 When a file has no timezone offset:
 
@@ -110,12 +110,13 @@ When a file has no timezone offset:
 
 For each image the tool tries, in order:
 
-1. **A visit** covering the capture time, however long it lasted. If visits overlap, the innermost (higher `hierarchyLevel`, then shorter) wins.
-2. **Interpolation between the two location points** around the capture time, if both are within `--tolerance`.
-3. **An activity** (a journey) covering the capture time: the position is interpolated along the straight line from its start to its end.
-4. **The nearest location point** within `--tolerance`.
+1. **A location point within a minute** of the capture time (interpolated with its neighbour, if interpolation is on and both are within `--tolerance`). A GPS track fix beats a visit, which only gives the place's centre.
+2. **A visit** covering the capture time, however long it lasted. If visits overlap, the innermost (higher `hierarchyLevel`, then shorter) wins.
+3. **Interpolation between the two location points** around the capture time, if both are within `--tolerance`.
+4. **An activity** (a journey) covering the capture time: the position is interpolated along the straight line from its start to its end.
+5. **The nearest location point** within `--tolerance`.
 
-With `--no-interpolation`, steps 2 and 3 are replaced by the nearest point within `--tolerance` and then the nearer end of a covering activity. Longitudes are interpolated the short way round across the antimeridian.
+With `--no-interpolation`, steps 3 and 4 are replaced by the nearest point within `--tolerance` and then the nearer end of a covering activity. Longitudes are interpolated the short way round across the antimeridian.
 
 ## Supported location formats
 

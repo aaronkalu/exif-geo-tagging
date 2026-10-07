@@ -29,14 +29,13 @@ def test_read_metadata_applies_offset(tool: ExifTool, tmp_path: Path) -> None:
     metadata = read_one(tool, image)
     assert metadata.local_time == datetime(2024, 1, 1, 11, 30)
     assert metadata.utc_offset == timedelta(hours=2)
-    assert metadata.taken_at == datetime(2024, 1, 1, 9, 30, tzinfo=UTC)
     assert not metadata.has_gps
 
 
 def test_read_metadata_without_offset(tool: ExifTool, tmp_path: Path) -> None:
     metadata = read_one(tool, make_jpeg(tmp_path / "a.jpg", "-DateTimeOriginal=2024:01:01 11:30:00"))
     assert metadata.utc_offset is None
-    assert metadata.taken_at == datetime(2024, 1, 1, 11, 30, tzinfo=UTC)
+    assert not metadata.utc_by_specification
 
 
 @pytest.mark.parametrize("tag", ["OffsetTimeDigitized", "OffsetTime"])
@@ -47,7 +46,8 @@ def test_read_metadata_falls_back_to_other_offset_tags(tool: ExifTool, tmp_path:
 
 def test_read_metadata_uses_offset_inside_xmp_date(tool: ExifTool, tmp_path: Path) -> None:
     image = make_jpeg(tmp_path / "a.jpg", "-XMP-exif:DateTimeOriginal=2024:01:01 11:30:00-05:00")
-    assert read_one(tool, image).taken_at == datetime(2024, 1, 1, 16, 30, tzinfo=UTC)
+    metadata = read_one(tool, image)
+    assert (metadata.local_time, metadata.utc_offset) == (datetime(2024, 1, 1, 11, 30), timedelta(hours=-5))
 
 
 def test_read_metadata_reports_signed_position(tool: ExifTool, tmp_path: Path) -> None:
@@ -107,8 +107,8 @@ def test_writes_png(tool: ExifTool, tmp_path: Path) -> None:
 def test_video_capture_time_and_gps(tool: ExifTool, tmp_path: Path) -> None:
     video = make_file(tmp_path / "a.mp4", TINY_MP4, "-api", "QuickTimeUTC", "-QuickTime:CreateDate=2024:01:01 10:00:00Z")
     metadata = read_one(tool, video)
-    assert metadata.taken_at == datetime(2024, 1, 1, 10, tzinfo=UTC)
-    assert metadata.utc_offset is not None
+    assert metadata.local_time == datetime(2024, 1, 1, 10)
+    assert metadata.utc_offset is None and metadata.utc_by_specification
 
     tool.write_gps(video, 1.5, -2.0)
 
@@ -153,13 +153,53 @@ def test_existing_darktable_sidecar_is_used(tool: ExifTool, tmp_path: Path) -> N
     assert not (tmp_path / "IMG_1.xmp").exists()
 
 
-def test_remove_gps(tool: ExifTool, tmp_path: Path) -> None:
+def test_restoring_no_tags_removes_gps(tool: ExifTool, tmp_path: Path) -> None:
     image = make_jpeg(tmp_path / "a.jpg")
     video = make_file(tmp_path / "a.mp4", TINY_MP4)
-    for path in (image, video):
+    raw = make_jpeg(tmp_path / "IMG_1.jpg").rename(tmp_path / "IMG_1.nef")
+    for path in (image, video, raw):
         tool.write_gps(path, 1.0, 2.0, datetime(2024, 1, 1, tzinfo=UTC))
-        tool.remove_gps(path)
+        tool.restore_gps(path, read_one(tool, make_jpeg(tmp_path / "blank.jpg")).gps_tags)
         assert not read_one(tool, path).has_gps
+    assert read_tags(image, "GPS:all") == []
+
+
+def test_restore_puts_back_every_overwritten_tag(tool: ExifTool, tmp_path: Path) -> None:
+    image = make_jpeg(
+        tmp_path / "a.jpg", "-GPSLatitude=1.5", "-GPSLatitudeRef=S", "-GPSLongitude=2", "-GPSLongitudeRef=E",
+        "-GPSMapDatum=TOKYO", "-GPSDateStamp=2020:01:02", "-GPSTimeStamp=12:30:05", "-GPSAltitude=100",
+        "-XMP-exif:GPSLatitude=-1.5",
+    )
+    tags = "GPS:all", "XMP-exif:all"
+    before = read_tags(image, *tags)
+    previous = read_one(tool, image).gps_tags
+
+    tool.write_gps(image, 50.0, 60.0, datetime(2024, 1, 1, tzinfo=UTC))
+    tool.restore_gps(image, previous)
+
+    assert read_tags(image, *tags) == before
+
+
+def test_restore_without_position_keeps_other_gps_data(tool: ExifTool, tmp_path: Path) -> None:
+    # No Ref tags, so ExifTool builds no Composite position, but the coordinates are still there.
+    image = make_jpeg(tmp_path / "a.jpg", "-GPSLatitude=1.5", "-GPSLongitude=2")
+    metadata = read_one(tool, image)
+    assert metadata.has_gps and metadata.position is None
+
+    tool.write_gps(image, 50.0, 60.0)
+    tool.restore_gps(image, metadata.gps_tags)
+
+    assert read_tags(image, "GPS:GPSLatitude", "GPS:GPSLongitude", "GPS:GPSLatitudeRef") == ["1.5", "2"]
+
+
+def test_file_names_that_look_like_arguments(tool: ExifTool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    for name in ("#1.jpg", "-x.jpg", " lead.jpg"):
+        make_jpeg(tmp_path / name, "-DateTimeOriginal=2024:01:01 10:00:00")
+        relative = Path(name)
+        assert read_one(tool, relative).local_time == datetime(2024, 1, 1, 10)
+        tool.write_gps(relative, 1.0, 2.0)
+        assert read_one(tool, relative).position == (1.0, 2.0)
 
 
 def test_write_error_is_reported(tool: ExifTool, tmp_path: Path) -> None:

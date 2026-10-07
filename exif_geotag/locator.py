@@ -7,6 +7,9 @@ from datetime import UTC, datetime, timedelta
 
 from exif_geotag.timeline import Location, Span, SpanKind
 
+PRECISE_FIX = timedelta(minutes=1)
+"""A point (or two to interpolate between) this close to a photo beats a visit, which only gives a place's centre."""
+
 
 @dataclass(frozen=True)
 class Match:
@@ -39,25 +42,30 @@ class LocationIndex:
         return len(self._locations)
 
     def locate(self, timestamp: datetime, tolerance: timedelta) -> Match | None:
-        """Tries, in order: a visit spanning `timestamp`, interpolation between points both within `tolerance`
-        (only with interpolation on), an activity spanning `timestamp`, and the nearest point within `tolerance`.
-        Without interpolation the nearest point is tried before the activity, whose nearer end is used."""
-        visit = self._visits.best_covering(timestamp)
-        if visit is not None:
-            return Match(visit.nearer_end(timestamp), timedelta(0))
-
+        """Tries, in order: a point within PRECISE_FIX, a visit spanning `timestamp`, interpolation between points
+        both within `tolerance` (only with interpolation on), an activity spanning `timestamp`, and the nearest point
+        within `tolerance`. Without interpolation the nearest point is tried before the activity, whose nearer end
+        is used."""
         before, after = self._neighbours(timestamp)
         nearest = _nearer(before, after, timestamp)
         if nearest is not None and nearest.timestamp == timestamp:
             return Match(nearest, timedelta(0))
+        interpolated = None
         if self._interpolate and before is not None and after is not None:
             gaps = (timestamp - before.timestamp, after.timestamp - timestamp)
             if max(gaps) <= tolerance:
-                return Match(interpolate(before, after, timestamp), min(gaps))
-
+                interpolated = Match(interpolate(before, after, timestamp), min(gaps))
         nearest_match = None
         if nearest is not None and abs(nearest.timestamp - timestamp) <= tolerance:
             nearest_match = Match(nearest, abs(nearest.timestamp - timestamp))
+        if nearest_match is not None and nearest_match.time_difference <= PRECISE_FIX:
+            return interpolated or nearest_match
+
+        visit = self._visits.best_covering(timestamp)
+        if visit is not None:
+            return Match(visit.nearer_end(timestamp), timedelta(0))
+        if interpolated is not None:
+            return interpolated
         if nearest_match is not None and not self._interpolate:
             return nearest_match
 
@@ -98,25 +106,49 @@ class LocationIndex:
 
 
 class _SpanIndex:
+    """Spans sorted by start, with a segment tree of the latest end in each range of them.
+
+    A lookup only descends into ranges that start early enough and reach `timestamp`, so it costs O(k log n) for k
+    covering spans, however long the spans before it are.
+    """
+
     def __init__(self, spans: Sequence[Span], key: Callable[[Span], object]) -> None:
         self._spans = sorted(spans, key=lambda span: span.start.timestamp)
         self._starts = [span.start.timestamp for span in self._spans]
         self._key = key
-        # Latest end among each prefix: scanning backwards can stop once no earlier span reaches `timestamp`.
-        self._furthest_end: list[datetime] = []
-        for span in self._spans:
-            previous = self._furthest_end[-1] if self._furthest_end else span.end.timestamp
-            self._furthest_end.append(max(previous, span.end.timestamp))
+        self._latest_end: list[datetime | None] = [None] * (4 * len(self._spans))
+        if self._spans:
+            self._build(1, 0, len(self._spans))
 
     def best_covering(self, timestamp: datetime) -> Span | None:
-        covering = []
-        position = bisect_right(self._starts, timestamp) - 1
-        while position >= 0 and self._furthest_end[position] >= timestamp:
-            span = self._spans[position]
-            if span.end.timestamp >= timestamp:
-                covering.append(span)
-            position -= 1
+        covering: list[Span] = []
+        if self._spans:
+            self._collect(1, 0, len(self._spans), bisect_right(self._starts, timestamp), timestamp, covering)
         return min(covering, key=self._key, default=None)  # type: ignore[arg-type]
+
+    def _build(self, node: int, low: int, high: int) -> datetime:
+        if high - low == 1:
+            latest = self._spans[low].end.timestamp
+        else:
+            middle = (low + high) // 2
+            latest = max(self._build(2 * node, low, middle), self._build(2 * node + 1, middle, high))
+        self._latest_end[node] = latest
+        return latest
+
+    def _collect(
+        self, node: int, low: int, high: int, started: int, timestamp: datetime, covering: list[Span]
+    ) -> None:
+        """Adds the spans among `self._spans[low:high]` that are among the first `started` and end at or after
+        `timestamp`."""
+        latest = self._latest_end[node]
+        if low >= started or latest is None or latest < timestamp:
+            return
+        if high - low == 1:
+            covering.append(self._spans[low])
+            return
+        middle = (low + high) // 2
+        self._collect(2 * node, low, middle, started, timestamp, covering)
+        self._collect(2 * node + 1, middle, high, started, timestamp, covering)
 
 
 def interpolate(start: Location, end: Location, timestamp: datetime) -> Location:

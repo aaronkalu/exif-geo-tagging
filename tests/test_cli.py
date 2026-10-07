@@ -131,7 +131,14 @@ def test_undo_removes_new_gps_and_restores_overwritten_gps(
 
     assert read_tags(photos / "a.jpg", "GPSLatitude") == []
     assert gps(photos / "b.jpg") == ("1.0000 N", "2.0000 E")
+    assert read_tags(photos / "b.jpg", "GPSDateStamp", "GPSMapDatum") == []
     assert "Done. 1 restored, 1 removed, 0 failed." in capsys.readouterr().out
+
+
+@needs_exiftool
+def test_unwritable_log_exits_cleanly(timeline: Path, photos: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["-j", str(timeline), "-d", str(photos), "--log", str(tmp_path / "missing" / "log.csv")]) == 1
+    assert "Could not write log file" in capsys.readouterr().err
 
 
 @needs_exiftool

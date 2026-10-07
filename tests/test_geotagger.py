@@ -139,7 +139,17 @@ def test_tags_video(tool: exiftool.ExifTool, tmp_path: Path) -> None:
     video = make_file(tmp_path / "a.mp4", TINY_MP4, "-api", "QuickTimeUTC", "-QuickTime:CreateDate=2024:01:01 10:10:00Z")
     result = process(Geotagger(INDEX, HOUR), video, tool)
     assert result.outcome is Outcome.TAGGED, result.message
+    assert result.issues == (Issue.VIDEO_TIME_ASSUMED_UTC,)
+    assert result.taken_at == datetime(2024, 1, 1, 10, 10, tzinfo=UTC)
+
+
+@needs_exiftool
+def test_timezone_applies_to_video_create_date(tool: exiftool.ExifTool, tmp_path: Path) -> None:
+    # A camera that wrote 21:10 Sydney time into CreateDate.
+    video = make_file(tmp_path / "a.mp4", TINY_MP4, "-QuickTime:CreateDate=2024:01:01 21:10:00")
+    result = process(Geotagger(INDEX, HOUR, assumed_timezone=ZoneInfo("Australia/Sydney")), video, tool)
     assert result.issues == ()
+    assert result.taken_at == datetime(2024, 1, 1, 10, 10, tzinfo=UTC)
 
 
 @needs_exiftool

@@ -103,6 +103,21 @@ def test_visit_beats_nearby_point() -> None:
     assert source(index, at(14, 30)) == "visit_start"
 
 
+def test_precise_fix_beats_visit() -> None:
+    visit = span(11, 18, "visit", latitude=5.0)
+    fix = Location(at(14, 0) + timedelta(seconds=20), 7.0, 0.0, source="gpx")
+    index = LocationIndex([visit.start, fix, visit.end], [visit], interpolate=False)
+    assert source(index, at(14)) == "gpx"
+
+
+def test_long_early_span_does_not_hide_later_ones() -> None:
+    trip = span(0, 23, "trip")
+    visits = [span(hour, hour, f"v{hour}", level=1) for hour in range(1, 23)]
+    index = LocationIndex([], [trip, *visits])
+    assert source(index, at(12)) == "v12_start"
+    assert source(index, at(5, 30)) == "trip_start"
+
+
 def test_dense_points_beat_straight_line_through_activity() -> None:
     drive = span(10, 12, "drive", SpanKind.ACTIVITY, latitude=0.0, end_latitude=10.0)
     road = location(11, "path", latitude=50.0)
