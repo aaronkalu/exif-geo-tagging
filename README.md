@@ -23,6 +23,12 @@ This Python script uses Google Timeline location data to geotag images by matchi
      sudo apt install libimage-exiftool-perl
      ```
 
+3. **Install Python dependencies** (from the repository root):
+   ```bash
+   pip install .
+   ```
+   This also installs a `geotag` command, so `geotag --json ... --dir ...` works from anywhere.
+
 ## Usage
 
 To use the script, navigate to the directory containing geotag.py and run the following command in your terminal:
@@ -35,7 +41,7 @@ python geotag.py --json /path/to/location_data.json --dir /path/to/images/ [--to
 
 - `--json` or `-j`: Path to Google Timeline JSON file.
 - `--dir` or `-d`: Directory containing images.
-- `--tolerance` or `-t`: Tolerance in hours for matching images to locations. Default is 1 hour.
+- `--tolerance` or `-t`: Maximum time difference in hours (decimals allowed) between an image and its matched location. Images with no location inside this window are skipped. Default is 1 hour.
 - `--overwrite` or `-o`: Overwrite existing GPS data.
 - `--recursive` or `-r`: Process images in subdirectories recursively.
 - `--workers` or `-w`: Number of parallel workers/threads to speed up processing (default is 1).
@@ -47,11 +53,28 @@ To geotag images in the directory /path/to/images/ using location data from loca
 python geotag.py --json /path/to/location_data.json --dir /path/to/images/ --tolerance 2
 ```
 
+**Run summary:**
+
+At the end of a run the script prints how many images were tagged, skipped and failed, followed by a **Warnings** section listing anything unexpected, grouped by cause with the affected files:
+
+- no JPEG images found in the directory
+- malformed timeline entries that were ignored
+- images without `DateTimeOriginal` (skipped)
+- images with no timeline location within `--tolerance` (skipped)
+- images without `OffsetTimeOriginal` (capture time assumed to be UTC)
+- ExifTool errors (failed)
+
+Images skipped because they already have GPS data are expected and not reported as warnings. The exit code is 1 if any image failed.
+
 **Supported File Formats:**
 
 This script currently supports the following image file formats:
 
-- JPEG (.jpg, .jpeg)
+- JPEG (.jpg, .jpeg, any capitalisation)
+
+**Image timestamps:**
+
+The capture time is read from the EXIF `DateTimeOriginal` tag and converted to UTC using `OffsetTimeOriginal`. If an image has no `OffsetTimeOriginal`, its time is assumed to already be UTC. Images without `DateTimeOriginal` are skipped.
 
 ## Supported Google Timeline JSON Format
 
@@ -77,8 +100,8 @@ The script supports the following formats of Google Timeline location data:
 2. Visit Data:
 ```json
 {
-  "endTime": "2024-01-01T11:00:00.000+02:00",
-  "startTime": "2024-01-01T18:00:00.000+02:00",
+  "endTime": "2024-01-01T18:00:00.000+02:00",
+  "startTime": "2024-01-01T11:00:00.000+02:00",
   "visit": {
     "hierarchyLevel": "0",
     "topCandidate": {
@@ -109,3 +132,18 @@ The script supports the following formats of Google Timeline location data:
 
 - **Backup:** It is recommended to keep a backup of your images before running the script, especially if you are unsure about the changes.
 - **EXIF Quality:** Modifying the EXIF data does not affect the image quality, as it only updates the metadata.
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+The code lives in the `exif_geotag` package:
+
+- `timeline.py`: parses Google Timeline JSON into `Location`s
+- `locator.py`: finds the location closest in time to a photo
+- `exiftool.py`: reads and writes image metadata through ExifTool
+- `geotagger.py`: matches images to locations and writes their GPS data
+- `cli.py`: command-line interface
