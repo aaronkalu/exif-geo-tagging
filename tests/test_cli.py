@@ -5,7 +5,7 @@ from datetime import UTC, timedelta
 from pathlib import Path
 
 import pytest
-from media_files import gps, make_jpeg, read_tags
+from media_files import TINY_PNG, gps, make_file, make_jpeg, read_tags
 
 from exif_geotag import geotagger
 from exif_geotag.cli import main, parse_args
@@ -61,6 +61,34 @@ def test_accepts_several_location_files(tmp_path: Path, timeline: Path) -> None:
     gpx.touch()
     args = parse_args(["-j", str(timeline), str(gpx), "-j", str(timeline), "-d", str(tmp_path)])
     assert args.json == [timeline, gpx, timeline]
+
+
+def test_all_file_types_without_ext(tmp_path: Path, timeline: Path) -> None:
+    assert parse_args(["-j", str(timeline), "-d", str(tmp_path)]).ext is None
+
+
+def test_ext_accepts_types_kinds_and_commas(tmp_path: Path, timeline: Path) -> None:
+    args = parse_args(["-j", str(timeline), "-d", str(tmp_path), "--ext", "JPG", ".heic,video", "-e", "arw"])
+    assert args.ext == {".jpg", ".heic", ".arw", ".mp4", ".mov", ".m4v", ".3gp"}
+    assert ".cr3" in parse_args(["-j", str(timeline), "-d", str(tmp_path), "--ext", "raw"]).ext
+
+
+@pytest.mark.parametrize("value", ["txt", ","])
+def test_ext_rejects_unsupported_types(tmp_path: Path, timeline: Path, value: str) -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["-j", str(timeline), "-d", str(tmp_path), "--ext", value])
+
+
+@needs_exiftool
+def test_ext_only_tags_selected_types(timeline: Path, tmp_path: Path) -> None:
+    photos = tmp_path / "photos"
+    make_jpeg(photos / "a.jpg", "-DateTimeOriginal=2024:01:01 12:00:00")
+    make_file(photos / "b.png", TINY_PNG, "-DateTimeOriginal=2024:01:01 12:00:00")
+
+    assert main(["-j", str(timeline), "-d", str(photos), "--ext", "png", "-q"]) == 0
+
+    assert read_tags(photos / "a.jpg", "GPSLatitude") == []
+    assert read_tags(photos / "b.png", "GPSLatitude") != []
 
 
 @pytest.mark.parametrize(

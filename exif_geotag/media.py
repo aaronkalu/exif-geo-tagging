@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+from collections.abc import Collection
 from pathlib import Path
 
 
@@ -23,6 +24,13 @@ _KINDS = {
 }
 
 
+SUPPORTED_EXTENSIONS = frozenset(_KINDS)
+
+
+def extensions_of(kind: MediaKind) -> frozenset[str]:
+    return frozenset(extension for extension, extension_kind in _KINDS.items() if extension_kind is kind)
+
+
 def media_kind(path: Path) -> MediaKind | None:
     return _KINDS.get(path.suffix.lower())
 
@@ -37,12 +45,14 @@ def write_target(path: Path) -> Path:
     return sidecar_for(path) if media_kind(path) is MediaKind.RAW else path
 
 
-def find_media(directory: Path, recursive: bool) -> list[Path]:
+def find_media(directory: Path, recursive: bool, extensions: Collection[str] | None = None) -> list[Path]:
+    """`extensions` (lower case, with the dot) limits the search to those supported types; None means all."""
+    allowed = SUPPORTED_EXTENSIONS if extensions is None else SUPPORTED_EXTENSIONS & set(extensions)
     candidates = directory.rglob("*") if recursive else directory.iterdir()
     return sorted(
         path
         for path in candidates
-        if media_kind(path) is not None and not _is_hidden(path.relative_to(directory)) and path.is_file()
+        if path.suffix.lower() in allowed and not _is_hidden(path.relative_to(directory)) and path.is_file()
     )
 
 

@@ -19,7 +19,7 @@ from exif_geotag.geotagger import Geotagger
 from exif_geotag.loader import load_timeline
 from exif_geotag.locator import LocationIndex
 from exif_geotag.matchlog import MatchLog, read_log
-from exif_geotag.media import find_media
+from exif_geotag.media import SUPPORTED_EXTENSIONS, MediaKind, extensions_of, find_media
 from exif_geotag.report import RunReport
 from exif_geotag.timeline import Timeline, TimelineError
 from exif_geotag.undo import UndoOutcome, tagged_rows, undo
@@ -42,6 +42,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Maximum time difference in hours between an image and its matched location (default: 1).",
     )
     parser.add_argument("-o", "--overwrite", action="store_true", help="Overwrite existing GPS data.")
+    parser.add_argument(
+        "-e", "--ext", action="extend", nargs="+", default=[], metavar="TYPE",
+        help="Only process these file types, e.g. --ext jpg arw or --ext raw,video. "
+        "Also accepts image, raw and video. Default: all supported types.",
+    )
     parser.add_argument("-r", "--recursive", action="store_true", help="Process images in subdirectories recursively.")
     parser.add_argument(
         "-w", "--workers", type=int, default=os.cpu_count() or 1,
@@ -92,6 +97,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--min-probability must be between 0 and 1.")
     if args.workers < 1:
         parser.error("--workers must be at least 1.")
+    try:
+        args.ext = _extensions(args.ext)
+    except ValueError as error:
+        parser.error(str(error))
     for path in args.json:
         if not path.is_file():
             parser.error(f"Location file not found: {path}")
@@ -124,7 +133,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("No locations found in the location data.", file=sys.stderr)
         return 1
 
-    images = find_media(args.dir, args.recursive)
+    images = find_media(args.dir, args.recursive, args.ext)
     geotagger = Geotagger(
         locations, timedelta(hours=args.tolerance), args.overwrite, dry_run=args.dry_run, keep_backup=args.backup,
         time_shift=args.time_shift, assumed_timezone=args.timezone,
@@ -178,6 +187,24 @@ def _undo(args: argparse.Namespace) -> int:
     heading = "Dry run, no files were changed. Would have:" if args.dry_run else "Done."
     print(f"{heading} {', '.join(f'{outcomes[outcome]} {outcome.value}' for outcome in UndoOutcome)}.")
     return 1 if outcomes[UndoOutcome.FAILED] else 0
+
+
+def _extensions(values: list[str]) -> frozenset[str] | None:
+    if not values:
+        return None
+    kinds = {kind.value: kind for kind in MediaKind}
+    extensions: set[str] = set()
+    for name in (part.strip().lower() for value in values for part in value.split(",")):
+        if name in kinds:
+            extensions |= extensions_of(kinds[name])
+        elif f".{name.lstrip('.')}" in SUPPORTED_EXTENSIONS:
+            extensions.add(f".{name.lstrip('.')}")
+        elif name:
+            supported = ", ".join(sorted(extension.lstrip(".") for extension in SUPPORTED_EXTENSIONS))
+            raise ValueError(f"--ext: unsupported file type {name!r}; use image, raw, video or one of: {supported}")
+    if not extensions:
+        raise ValueError("--ext needs at least one file type")
+    return frozenset(extensions)
 
 
 def _timezone(value: str) -> tzinfo:

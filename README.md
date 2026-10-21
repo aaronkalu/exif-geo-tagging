@@ -46,6 +46,7 @@ After `pip install .` you can use `geotag` instead of `python geotag.py` from an
 - `--dir` or `-d`: Directory containing images and videos.
 - `--tolerance` or `-t`: Maximum time difference in hours (decimals allowed, up to 8760) between an image and the location data used for it. Images with no location inside this window, and not taken during a visit or activity, are skipped. Default is 1 hour.
 - `--overwrite` or `-o`: Overwrite existing GPS data.
+- `--ext` or `-e`: Only process these file types, e.g. `--ext jpg arw` or `--ext jpg,heic`. `image`, `raw` and `video` select all supported types of that kind (`--ext raw video`). Without `--ext` every supported type is processed.
 - `--recursive` or `-r`: Process images in subdirectories recursively. Hidden files and folders, such as macOS `._*` files and `.Trashes`, are ignored.
 - `--workers` or `-w`: Number of parallel ExifTool processes. Default is the number of CPUs.
 - `--dry-run` or `-n`: Show what would be done without changing any file.
