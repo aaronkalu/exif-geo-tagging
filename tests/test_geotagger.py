@@ -233,6 +233,17 @@ def test_find_media_matches_extensions_case_insensitively(tmp_path: Path) -> Non
     assert [p.name for p in find_media(tmp_path, recursive=True)] == [*expected, "h.jpeg"]
 
 
+def test_find_media_limits_to_given_extensions(tmp_path: Path) -> None:
+    for name in ["a.jpg", "b.JPG", "c.ARW", "d.mp4", "sub/e.arw"]:
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).touch()
+
+    assert [p.name for p in find_media(tmp_path, recursive=True, extensions={".arw"})] == ["c.ARW", "e.arw"]
+    assert [p.name for p in find_media(tmp_path, recursive=False, extensions={".jpg", ".mp4"})] == [
+        "a.jpg", "b.JPG", "d.mp4",
+    ]
+
+
 def test_find_media_skips_hidden_files_and_folders(tmp_path: Path) -> None:
     for name in ["a.jpg", "._a.jpg", ".hidden.jpg", ".Trashes/b.jpg", "sub/c.jpg", "sub/._c.jpg"]:
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
