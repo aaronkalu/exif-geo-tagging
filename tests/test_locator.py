@@ -97,10 +97,27 @@ def test_timestamp_inside_long_visit_uses_it_however_far_the_ends_are() -> None:
     assert index.locate(at(20), HOUR) is None
 
 
-def test_visit_beats_nearby_point() -> None:
+def test_visit_without_track_points_uses_its_place() -> None:
     visit = span(11, 18, "visit")
-    index = LocationIndex([visit.start, location(14, "path"), visit.end], [visit])
+    index = LocationIndex([location(10, "path"), visit.start, visit.end, location(19, "path")], [visit])
     assert source(index, at(14, 30)) == "visit_start"
+
+
+def test_track_point_during_visit_beats_visit_place() -> None:
+    visit = span(11, 18, "visit", latitude=5.0)
+    index = LocationIndex([visit.start, location(14, "path", latitude=6.0), visit.end, location(20, "path")], [visit])
+    match = index.locate(at(17), HOUR)
+    assert match is not None and match.location.source == "path" and match.location.latitude == 6.0
+    assert match.time_difference == timedelta(0)
+
+
+def test_track_points_during_visit_are_interpolated() -> None:
+    visit = span(11, 18, "visit", latitude=5.0)
+    track = [location(12, "path", latitude=6.0), location(16, "path", latitude=8.0)]
+    index = LocationIndex([visit.start, *track, visit.end], [visit])
+    match = index.locate(at(14), HOUR)
+    assert match is not None and match.location.source == "interpolated path" and match.location.latitude == 7.0
+    assert source(LocationIndex([visit.start, *track, visit.end], [visit], interpolate=False), at(14, 30)) == "path"
 
 
 def test_precise_fix_beats_visit() -> None:

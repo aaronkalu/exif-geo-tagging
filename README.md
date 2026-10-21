@@ -111,7 +111,7 @@ When a file has no timezone offset:
 For each image the tool tries, in order:
 
 1. **A location point within a minute** of the capture time (interpolated with its neighbour, if interpolation is on and both are within `--tolerance`). A GPS track fix beats a visit, which only gives the place's centre.
-2. **A visit** covering the capture time, however long it lasted. If visits overlap, the innermost (higher `hierarchyLevel`, then shorter) wins.
+2. **A visit** covering the capture time, however long it lasted. If visits overlap, the innermost (higher `hierarchyLevel`, then shorter) wins. The position comes from the location points recorded during the visit (interpolated between the two around the capture time, if interpolation is on), since Google's place for a visit is only the centre of the place it guessed. Only a visit without such points uses that place.
 3. **Interpolation between the two location points** around the capture time, if both are within `--tolerance`.
 4. **An activity** (a journey) covering the capture time: the position is interpolated along the straight line from its start to its end.
 5. **The nearest location point** within `--tolerance`.
