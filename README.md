@@ -212,3 +212,14 @@ The code lives in the `exif_geotag` package:
 - `undo.py`: reverts a run from its log
 - `report.py`: end-of-run summary and warnings
 - `cli.py`: command-line interface
+
+### Comparing against the original script
+
+`scripts/compare.py` checks accuracy and side effects on real photos that already have GPS (e.g. from a phone). It copies the folder twice and removes GPS from both copies. The original `geotag.py` (`f2e090b`) tags one copy and the current version tags the other. Both results are scored against the photos' own positions. The script also reports any change to non-GPS metadata, pixel data or file times, and checks `--dry-run` and `--undo`. The source folder is only read.
+
+```bash
+python scripts/compare.py --photos ~/Pictures/sample --json Timeline.json --out /tmp/geotag-compare
+python scripts/compare.py ... -- --timezone Europe/Vienna   # arguments after -- go to the current version
+```
+
+It writes `report.md` and a per-file `files.csv` to `--out`. The original script only reads the iOS on-device Timeline export, so use that format for a fair comparison.
