@@ -22,6 +22,9 @@ class LocationIndex:
     def __init__(self, locations: Sequence[Location], spans: Sequence[Span] = (), interpolate: bool = True) -> None:
         self._locations = sorted(locations, key=lambda location: location.timestamp)
         self._timestamps = [location.timestamp for location in self._locations]
+        span_ends = {id(end) for span in spans for end in (span.start, span.end)}
+        self._track = [location for location in self._locations if id(location) not in span_ends]
+        self._track_timestamps = [location.timestamp for location in self._track]
         self._interpolate = interpolate
         # Innermost visit first: the shop rather than the mall around it, then the shortest.
         self._visits = _SpanIndex(
@@ -42,10 +45,10 @@ class LocationIndex:
         return len(self._locations)
 
     def locate(self, timestamp: datetime, tolerance: timedelta) -> Match | None:
-        """Tries, in order: a point within PRECISE_FIX, a visit spanning `timestamp`, interpolation between points
-        both within `tolerance` (only with interpolation on), an activity spanning `timestamp`, and the nearest point
-        within `tolerance`. Without interpolation the nearest point is tried before the activity, whose nearer end
-        is used."""
+        """Tries, in order: a point within PRECISE_FIX, a visit spanning `timestamp` (located by the track points
+        recorded during it, else by its place), interpolation between points both within `tolerance` (only with
+        interpolation on), an activity spanning `timestamp`, and the nearest point within `tolerance`. Without
+        interpolation the nearest point is tried before the activity, whose nearer end is used."""
         before, after = self._neighbours(timestamp)
         nearest = _nearer(before, after, timestamp)
         if nearest is not None and nearest.timestamp == timestamp:
@@ -63,7 +66,9 @@ class LocationIndex:
 
         visit = self._visits.best_covering(timestamp)
         if visit is not None:
-            return Match(visit.nearer_end(timestamp), timedelta(0))
+            # The visit's point is the centre of the place Google guessed, often tens and sometimes hundreds of
+            # metres from where the phone was; track points recorded during the visit cluster within metres of it.
+            return Match(self._track_during(visit, timestamp) or visit.nearer_end(timestamp), timedelta(0))
         if interpolated is not None:
             return interpolated
         if nearest_match is not None and not self._interpolate:
@@ -97,6 +102,16 @@ class LocationIndex:
             if best is None or distance < best[0]:
                 best = (distance, offset)
         return best[1] if best is not None else None
+
+    def _track_during(self, visit: Span, timestamp: datetime) -> Location | None:
+        position = bisect_left(self._track_timestamps, timestamp)
+        before = self._track[position - 1] if position > 0 else None
+        after = self._track[position] if position < len(self._track) else None
+        before = before if before is not None and visit.contains(before.timestamp) else None
+        after = after if after is not None and visit.contains(after.timestamp) else None
+        if self._interpolate and before is not None and after is not None:
+            return interpolate(before, after, timestamp)
+        return _nearer(before, after, timestamp)
 
     def _neighbours(self, timestamp: datetime) -> tuple[Location | None, Location | None]:
         position = bisect_left(self._timestamps, timestamp)
