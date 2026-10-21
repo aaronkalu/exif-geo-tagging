@@ -1,9 +1,10 @@
-"""Compare the original geotag.py with the current version on real photos that already carry GPS.
+"""Compare the original geotag.py with the current version on real photos with a known position.
 
-The photos' own GPS positions are the ground truth. Two copies are made with GPS removed, one is tagged by the
-old script and one by the current version, and both are scored against the truth. Every file is also checked
-for side effects: changes to non-GPS metadata, pixel data or file system state, leftovers after --dry-run and
---undo. The source folder is only read.
+The ground truth is the photos' own GPS, or, with --truth, a CSV of known places (columns file, latitude,
+longitude, radius_m, label; file relative to --photos) for photos recognisable by what they show. Two copies are
+made with GPS removed, one is tagged by the old script and one by the current version, and both are scored
+against the truth. Every file is also checked for side effects: changes to non-GPS metadata, pixel data or file
+system state, leftovers after --dry-run and --undo. The source folder is only read.
 
     uv run python scripts/compare.py --photos ~/Pictures/sample --json Timeline.json --out /tmp/geotag-compare
     uv run python scripts/compare.py ... -- --timezone Europe/Vienna   # extra arguments for the current version
@@ -55,6 +56,14 @@ class Snapshot:
     tags: dict[str, dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class Truth:
+    latitude: float
+    longitude: float
+    radius_m: float
+    label: str
+
+
 @dataclass
 class ToolRun:
     name: str
@@ -76,7 +85,9 @@ def main() -> int:
     )
     if not media:
         sys.exit(f"No photos or videos found in {args.photos}")
-    truth = read_positions(args.photos)
+    truth = read_truth(args.truth) if args.truth else {
+        name: Truth(*position, SAME_METRES, "") for name, position in read_positions(args.photos).items()
+    }
     source_tags = read_all_tags(args.photos)
 
     for copy in (work_old, work_new):
@@ -135,6 +146,7 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--photos", type=Path, required=True, help="Photos and videos that already have GPS.")
     parser.add_argument("--json", type=Path, required=True, help="Google Timeline export covering those photos.")
+    parser.add_argument("--truth", type=Path, help="CSV of known places to use instead of the photos' own GPS.")
     parser.add_argument("--out", type=Path, required=True, help="New, empty working directory (needs 2x the space).")
     parser.add_argument("-t", "--tolerance", type=float, default=1.0, help="Tolerance in hours for both tools.")
     parser.add_argument("--old-ref", default=OLD_REF, help=f"Git revision of the original script (default {OLD_REF}).")
@@ -143,6 +155,8 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     args.photos, args.json, args.out = args.photos.resolve(), args.json.resolve(), args.out.resolve()
     if not args.photos.is_dir():
         parser.error(f"not a directory: {args.photos}")
+    if args.truth is not None and not args.truth.is_file():
+        parser.error(f"not a file: {args.truth}")
     if not args.json.is_file():
         parser.error(f"not a file: {args.json}")
     if args.out.is_relative_to(args.photos) or args.photos.is_relative_to(args.out):
@@ -153,6 +167,13 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         parser.error("exiftool is not installed")
     args.out.mkdir(parents=True, exist_ok=True)
     return args, tool_args
+
+
+def read_truth(path: Path) -> dict[str, Truth]:
+    return {
+        row["file"]: Truth(float(row["latitude"]), float(row["longitude"]), float(row["radius_m"]), row["label"])
+        for row in read_csv(path)
+    }
 
 
 def walk(directory: Path) -> list[Path]:
@@ -281,18 +302,21 @@ def haversine(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 
 def score(
-    media: list[Path], truth: dict[str, tuple[float, float]], leftover: dict[str, tuple[float, float]],
+    media: list[Path], truth: dict[str, Truth], leftover: dict[str, tuple[float, float]],
     old: ToolRun, new: ToolRun, new_log: dict[Path, dict[str, str]], work_new: Path,
 ) -> list[dict[str, Any]]:
     rows = []
     for relative in map(str, media):
-        reference = truth.get(relative) if relative not in leftover else None
+        known = truth.get(relative) if relative not in leftover else None
+        reference = (known.latitude, known.longitude) if known else None
         log = new_log.get((work_new / relative).resolve(), {})
         row: dict[str, Any] = {
             "file": relative,
             "extension": Path(relative).suffix.lower(),
             "truth_latitude": reference[0] if reference else None,
             "truth_longitude": reference[1] if reference else None,
+            "truth_radius_m": known.radius_m if known else None,
+            "truth_label": known.label if known else None,
             "new_outcome": log.get("outcome"),
             "new_source": log.get("source") or None,
             "new_time_difference_seconds": log.get("time_difference_seconds") or None,
@@ -468,7 +492,7 @@ def render_report(
     scored = [row for row in rows if row["truth_latitude"] is not None]
     lines = [
         "# Geotag comparison", "",
-        f"- Photos: `{args.photos}` ({len(media)} media files, {len(scored)} with ground-truth GPS)",
+        f"- Photos: `{args.photos}` ({len(media)} media files, {len(scored)} with a known position)",
         f"- Timeline: `{args.json}`",
         f"- Tolerance: {args.tolerance} h (original script: {max(1, math.ceil(args.tolerance))} h, which it ignores)",
         f"- Original: `{args.old_ref}:geotag.py`, current: working tree",
@@ -483,17 +507,23 @@ def render_report(
             lines += ["", f"{label} output (last lines):", "```", run_.output_tail, "```"]
 
     lines += [
-        "", "## Accuracy against the photos' own GPS", "",
-        f"Phone GPS is itself off by 5–50 m, so differences under {SAME_METRES} m are noise.", "",
-        "| Tool | Files | Tagged | Coverage | Median error | P90 error | Max error | Wrong place (>1 km) |",
-        "|---|---|---|---|---|---|---|---|",
+        "", "## Accuracy", "",
+        f"Against {f'the known places in {args.truth}' if args.truth else 'the photos’ own GPS'}. Error is "
+        "the distance to the place's centre; *within radius* counts files inside the place's radius "
+        f"({SAME_METRES} m for the photos' own GPS, which is itself off by 5–50 m).", "",
+        "| Tool | Files | Tagged | Coverage | Within radius | Median error | P90 error | Max error "
+        "| Wrong place (>1 km) |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for name in ("old", "new"):
         errors = [row[f"{name}_error_m"] for row in scored if row[f"{name}_error_m"] is not None]
+        within = sum(
+            row[f"{name}_error_m"] is not None and row[f"{name}_error_m"] <= row["truth_radius_m"] for row in scored
+        )
         coverage = f"{len(errors) / len(scored):.0%}" if scored else "–"
         lines.append(
             f"| {'Original' if name == 'old' else 'Current'} | {len(scored)} | {len(errors)} | {coverage} "
-            + error_stats(errors)
+            f"| {within} " + error_stats(errors)
         )
 
     both = [row for row in scored if row["old_error_m"] is not None and row["new_error_m"] is not None]
@@ -555,13 +585,14 @@ def render_report(
         if not selection:
             lines.append("None.")
             continue
-        lines += ["| File | Taken | Original error | Current error | Source | Time difference |",
-                  "|---|---|---|---|---|---|"]
+        lines += ["| File | Place | Taken | Original error | Current error | Source | Time difference |",
+                  "|---|---|---|---|---|---|---|"]
         for row in selection[:25]:
             taken = source_tags.get(row["file"], {}).get("ExifIFD:DateTimeOriginal", "")
             seconds = row["new_time_difference_seconds"]
             lines.append(
-                f"| `{row['file']}` | {taken} | {opt(row['old_error_m'])} | {opt(row['new_error_m'])} "
+                f"| `{row['file']}` | {row['truth_label'] or '–'} | {taken} "
+                f"| {opt(row['old_error_m'])} | {opt(row['new_error_m'])} "
                 f"| {row['new_source'] or '–'} | {f'{int(seconds) // 60} min' if seconds else '–'} |"
             )
         if len(selection) > 25:

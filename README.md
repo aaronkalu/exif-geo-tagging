@@ -222,4 +222,6 @@ python scripts/compare.py --photos ~/Pictures/sample --json Timeline.json --out 
 python scripts/compare.py ... -- --timezone Europe/Vienna   # arguments after -- go to the current version
 ```
 
+For photos without their own GPS, pass `--truth places.csv` (columns `file,latitude,longitude,radius_m,label`) with known places recognised from the pictures; a file counts as correct inside the place's radius.
+
 It writes `report.md` and a per-file `files.csv` to `--out`. The original script only reads the iOS on-device Timeline export, so use that format for a fair comparison.
