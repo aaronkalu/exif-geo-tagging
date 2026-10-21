@@ -40,7 +40,7 @@ python geotag.py --json /path/to/location_data.json --dir /path/to/images/ [opti
 
 After `pip install .` you can use `geotag` instead of `python geotag.py` from any directory.
 
-**Parameters:**
+### Parameters
 
 - `--json` or `-j`: Location data file(s): any Google Timeline JSON export, `Records.json`, `.gpx` or `.kml`. Give several files (`-j a.json b.gpx`) to combine them.
 - `--dir` or `-d`: Directory containing images and videos.
@@ -59,7 +59,7 @@ After `pip install .` you can use `geotag` instead of `python geotag.py` from an
 - `--no-interpolation`: Use the nearest location point instead of interpolating between points.
 - `--quiet` or `-q`: Only print the progress bar and the summary.
 
-**Examples:**
+### Examples
 
 Preview a run with a 2-hour tolerance and keep a log:
 ```bash
@@ -72,7 +72,7 @@ python geotag.py -j location_data.json -d /path/to/images/ --log run.csv
 python geotag.py --undo run.csv
 ```
 
-**Run summary:**
+### Run summary
 
 At the end of a run the tool prints how many images were tagged, skipped and failed, followed by a **Warnings** section listing anything unexpected, grouped by cause with the affected files:
 
@@ -87,7 +87,7 @@ At the end of a run the tool prints how many images were tagged, skipped and fai
 
 Images skipped because they already have GPS data are expected and not reported as warnings. A GPS position of exactly 0, 0 counts as missing, because some cameras write it when they have no fix. The exit code is 1 if any image failed, and 130 if the run was interrupted with Ctrl+C (the summary then covers the images processed so far).
 
-**Supported file formats:**
+### Supported file formats
 
 - **Images** (written directly): JPEG, HEIC/HEIF, PNG, TIFF, WebP, DNG. The tool writes `GPSLatitude`/`GPSLongitude` with their Ref tags, `GPSDateStamp`/`GPSTimeStamp` (the capture time in UTC) and `GPSMapDatum`.
 - **RAW** (CR2, CR3, NEF, ARW, RAF, ORF, RW2, PEF and others): the RAW file is never modified. GPS data goes into an XMP sidecar: an existing `IMG_1234.CR2.xmp` (darktable style) is updated, otherwise `IMG_1234.xmp` (Adobe style) is updated or created.
@@ -95,7 +95,7 @@ Images skipped because they already have GPS data are expected and not reported 
 
 Files keep their modification time.
 
-**Image timestamps:**
+### Image timestamps
 
 For photos, the capture time is read from `DateTimeOriginal`. Its timezone comes from an offset in the tag itself (XMP), or else from the first of `OffsetTimeOriginal`, `OffsetTimeDigitized` or `OffsetTime`. Videos use Apple's `CreationDate`, which includes the offset, or else the QuickTime `CreateDate`. That is UTC by specification, and phones write it so, but many cameras (GoPro, DJI, Sony and others) write local time there: such videos are assumed to be UTC, with a warning, unless `--timezone` is given.
 
